@@ -64,7 +64,7 @@ try {
   check('canvas renders non-blank', base > 1000, `sum=${base}`);
 
   const setSlider = async (name, value) => {
-    const input = page.locator(`.slider[data-param=${name}] .slider-number`);
+    const input = page.locator(`[data-param=${name}] .slider-number`);
     await input.fill(String(value)); await input.press('Enter'); await page.waitForTimeout(150);
   };
 
@@ -74,23 +74,23 @@ try {
 
   // Dragging a real range input: one history entry per gesture.
   const before = await page.locator('.history-list li').count();
-  const range = page.locator('.slider[data-param=contrast] .slider-range');
+  const range = page.locator('[data-param=contrast] .slider-range');
   const box = await range.boundingBox();
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2);
   await page.mouse.down();
   for (let i = 1; i <= 8; i++) await page.mouse.move(box.x + box.width * (0.5 + i * 0.03), box.y + box.height / 2);
   await page.mouse.up(); await page.waitForTimeout(200);
-  const contrastVal = await page.locator('.slider[data-param=contrast] .slider-number').inputValue();
+  const contrastVal = await page.locator('[data-param=contrast] .slider-number').inputValue();
   check('dragging Contrast slider changes its value', parseInt(contrastVal) > 20, `contrast=${contrastVal}`);
   check('a whole drag is ONE history entry', (await page.locator('.history-list li').count()) === before + 1);
 
   // Keyboard adjust + double-click reset
   await setSlider('saturation', 0);
-  await page.locator('.slider[data-param=saturation] .slider-range').focus();
+  await page.locator('[data-param=saturation] .slider-range').focus();
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight'); await page.keyboard.press('Shift+ArrowRight');
-  check('keyboard arrows adjust (Shift = 10×)', (await page.locator('.slider[data-param=saturation] .slider-number').inputValue()) === '+12');
-  await page.locator('.slider[data-param=saturation] .slider-label').dblclick();
-  check('double-click resets a slider', (await page.locator('.slider[data-param=saturation] .slider-number').inputValue()) === '0');
+  check('keyboard arrows adjust (Shift = 10×)', (await page.locator('[data-param=saturation] .slider-number').inputValue()) === '+12');
+  await page.locator('[data-param=saturation] .slider-label').dblclick();
+  check('double-click resets a slider', (await page.locator('[data-param=saturation] .slider-number').inputValue()) === '0');
 
   // Histogram is real: exposure moves the clipping numbers / shape; shadows up shifts.
   const clipText1 = await page.locator('.clip-toggle').innerText();
@@ -100,9 +100,9 @@ try {
   await setSlider('exposure', 1);
 
   // White balance: Auto and eyedropper
-  const tempBefore = await page.locator('.slider[data-param=temperature] .slider-number').inputValue();
+  const tempBefore = await page.locator('[data-param=temperature] .slider-number').inputValue();
   await page.getByRole('button', { name: 'Auto' }).click(); await page.waitForTimeout(200);
-  const tempAuto = await page.locator('.slider[data-param=temperature] .slider-number').inputValue();
+  const tempAuto = await page.locator('[data-param=temperature] .slider-number').inputValue();
   check('Auto white balance sets Temp/Tint', tempBefore !== tempAuto, `temp ${tempBefore} -> ${tempAuto}`);
   await page.getByRole('button', { name: /Pick neutral/ }).click();
   const cv = await page.locator('[data-testid=viewer-canvas]').boundingBox();
@@ -158,8 +158,8 @@ try {
   const wheel = await page.locator('canvas.wheel').boundingBox();
   await page.mouse.move(wheel.x + wheel.width / 2, wheel.y + wheel.height / 2);
   await page.mouse.down(); await page.mouse.move(wheel.x + wheel.width * 0.8, wheel.y + wheel.height * 0.35, { steps: 6 }); await page.mouse.up(); await settle();
-  const gSat = parseInt(await page.locator('.slider[data-param=grade_global_sat] .slider-number').inputValue());
-  const gHue = parseInt(await page.locator('.slider[data-param=grade_global_hue] .slider-number').inputValue());
+  const gSat = parseInt(await page.locator('[data-param=grade_global_sat] .slider-number').inputValue());
+  const gHue = parseInt(await page.locator('[data-param=grade_global_hue] .slider-number').inputValue());
   check('grading: wheel drag sets hue (angle) and saturation (distance)', gSat > 30 && gHue > 20 && gHue < 70, `hue=${gHue} sat=${gSat}`);
   check('grading: tint changes the image; drag = one history entry', (await shot()) !== preGrade && (await topLabel()) === 'Global Color');
   await page.screenshot({ path: 'scripts/.out/grading.png' });
@@ -183,6 +183,175 @@ try {
   check('grain is stable between renders (deterministic)', (await shot()) === g1);
   await page.screenshot({ path: 'scripts/.out/effects.png' });
 
+  // ---------------------------------------------------------------- Phase 3: crop, rotate, geometry, lens
+  const aspectOf = async () => { const b = await page.locator('[data-testid=viewer-canvas]').boundingBox(); return b.width / b.height; };
+  const pixelAt = async (u, v) => {
+    const png = await page.locator('[data-testid=viewer-canvas]').screenshot();
+    return page.evaluate(async ({ b64, u, v }) => {
+      const bmp = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+      const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const x = c.getContext('2d'); x.drawImage(bmp, 0, 0);
+      return Array.from(x.getImageData(Math.round(u * (bmp.width - 1)), Math.round(v * (bmp.height - 1)), 1, 1).data.slice(0, 3));
+    }, { b64: png.toString('base64'), u, v });
+  };
+  await page.locator('[data-param=exposure]').scrollIntoViewIfNeeded().catch(() => {});
+  await page.locator('.topbar').getByRole('button', { name: 'Reset All' }).click(); await settle(); // clean slate: original framing
+  const a0 = await aspectOf();
+  await page.locator('[data-tool=crop]').click(); await settle();
+  check('crop tool: overlay with handles is shown, canvas still the full picture', (await page.locator('.crop-overlay [data-handle]').count()) === 8 && Math.abs((await aspectOf()) - a0) < 0.01);
+  await page.locator('[data-aspect="1:1"]').click(); await settle();
+  const sq = (await page.locator('[data-testid=crop-size]').innerText()).match(/(\d+) × (\d+) px/);
+  check('crop: 1:1 preset gives a square crop', !!sq && sq[1] === sq[2] && parseInt(sq[1]) > 100, await page.locator('[data-testid=crop-size]').innerText());
+  const body = await page.locator('[data-testid=crop-body]').boundingBox();
+  await page.mouse.move(body.x + body.width / 2, body.y + body.height / 2); await page.mouse.down();
+  await page.mouse.move(body.x + body.width / 2 + 60, body.y + body.height / 2, { steps: 5 }); await page.mouse.up(); await settle();
+  check('crop: dragging moves the crop (one "Crop" history entry)', (await topLabel()) === 'Crop');
+  const se = await page.locator('[data-handle=se]').boundingBox();
+  await page.mouse.move(se.x + 6, se.y + 6); await page.mouse.down();
+  await page.mouse.move(se.x - 80, se.y - 80, { steps: 6 }); await page.mouse.up(); await settle();
+  const sq2 = (await page.locator('[data-testid=crop-size]').innerText()).match(/(\d+) × (\d+) px/);
+  check('crop: corner drag resizes and keeps the 1:1 lock', !!sq2 && sq2[1] === sq2[2] && parseInt(sq2[1]) < parseInt(sq[1]), await page.locator('[data-testid=crop-size]').innerText());
+  await page.screenshot({ path: 'scripts/.out/crop-tool.png' });
+  const cropBefore = await page.locator('[data-testid=crop-body]').boundingBox();
+  await setSlider('straighten', 6); await settle();
+  const cropAfter = await page.locator('[data-testid=crop-body]').boundingBox();
+  check('straighten: crop auto-shrinks so no empty corners show', cropAfter.width < cropBefore.width - 2, `${cropBefore.width.toFixed(0)} -> ${cropAfter.width.toFixed(0)}`);
+  await page.locator('button', { hasText: 'Right' }).first().click(); await settle();
+  check('rotate right turns the picture (canvas aspect inverts)', Math.abs((await aspectOf()) * a0 - 1) < 0.02, `${(await aspectOf()).toFixed(3)} vs ${a0.toFixed(3)}`);
+  await page.locator('button', { hasText: 'Done' }).click(); await settle();
+  check('Done returns to the edit tool and shows the cropped result', (await page.locator('[data-tool=edit].on').count()) === 1 && Math.abs(Math.abs((await aspectOf()) - 1)) < 0.03, `aspect ${(await aspectOf()).toFixed(3)}`);
+  const cropShot = await shot();
+  await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z'); await settle();
+  check('undo steps back through crop operations', (await shot()) !== cropShot);
+  await page.keyboard.press('Control+Shift+z'); await page.keyboard.press('Control+Shift+z'); await settle();
+  check('redo restores them', (await shot()) === cropShot);
+  await page.locator('[data-tool=crop]').click(); await settle();
+  await page.locator('button.tool', { hasText: 'Reset crop' }).click(); await settle();
+  await page.locator('[data-tool=edit]').click(); await settle();
+  check('Reset crop restores the full original framing (nothing was lost)', Math.abs((await aspectOf()) - a0) < 0.01 && (await shot()) === base);
+
+  // Geometry + lens panels
+  await open('Geometry');
+  const preGeo = await shot();
+  await setSlider('geoVertical', 35); await settle();
+  check('geometry: Vertical perspective changes the image', (await shot()) !== preGeo);
+  await page.screenshot({ path: 'scripts/.out/geometry.png' });
+  await page.locator('[data-upright=auto]').click(); await settle();
+  const uprightLabel = await topLabel();
+  const toastText = await page.locator('.toast').count() ? await page.locator('.toast').last().innerText() : '';
+  check('Upright either corrects the photo or honestly reports no straight lines', /Auto Upright/.test(uprightLabel) || /no clear straight lines/.test(toastText), `${uprightLabel} | ${toastText}`);
+  await page.locator('[data-upright=off]').click(); await settle();
+  await setSlider('geoScale', 100); await setSlider('geoVertical', 0);
+  await open('Lens Corrections');
+  const preLens = await shot();
+  await page.selectOption('select[aria-label="Lens profile"]', 'example-wide'); await settle();
+  check('lens: selecting an example profile applies corrections and labels it as an example', (await shot()) !== preLens && (await page.locator('[data-testid=example-profile-note]').count()) === 1);
+  await setSlider('lensDistortion', 40); await setSlider('lensVignetting', 50); await setSlider('lensCA', 60); await settle();
+  check('lens: distortion / vignetting / CA sliders are live', (await shot()) !== preLens);
+  await page.selectOption('select[aria-label="Lens profile"]', 'none');
+  await setSlider('lensDistortion', 0); await setSlider('lensVignetting', 0); await setSlider('lensCA', 0); await settle();
+  await page.waitForTimeout(600);
+  const saved = await page.evaluate(async () => {
+    const db = await new Promise((r) => { const q = indexedDB.open('roomlight'); q.onsuccess = () => r(q.result); });
+    const rec = await new Promise((r) => { const q = db.transaction('edits').objectStore('edits').getAll(); q.onsuccess = () => r(q.result[0]); });
+    return rec.edits;
+  });
+  const scalarEdits = Object.entries(saved).filter(([k, v]) => typeof v === 'number' && !['gradeBlending', 'vignetteMidpoint', 'vignetteFeather', 'grainSize', 'grainRoughness', 'geoScale'].includes(k) && v !== 0);
+  check('geometry/lens sliders are all back at zero; the crop stayed shrunk (it only ever shrinks to hide empty edges)', scalarEdits.length === 0 && saved.lensProfile === 'none' && saved.crop.w < 1, JSON.stringify(scalarEdits) + ' crop.w=' + saved.crop.w.toFixed(3));
+  await page.locator('[data-tool=crop]').click(); await page.locator('button.tool', { hasText: 'Reset crop' }).click(); await page.locator('[data-tool=edit]').click(); await settle();
+  check('…and Reset crop brings back exactly the original render', (await shot()) === base);
+
+  // ---------------------------------------------------------------- Phase 4: masks
+  await page.locator('[data-tool=mask]').click(); await settle();
+  check('masking: AI selections are disabled and honestly labelled (no fake AI)', (await page.locator('[data-create=subject]').isDisabled()) && (await page.locator('[data-create=sky]').isDisabled()) && (await page.locator('[data-create=background]').isDisabled()) && /unavailable/i.test(await page.locator('[data-testid=ai-unavailable]').innerText()));
+  const preMask = await shot();
+  await page.locator('[data-create=linear]').click(); await settle();
+  check('linear gradient: created with draggable start/end handles', (await page.locator('.mask-list li').count()) === 1 && (await page.locator('[data-handle=start]').count()) === 1 && (await page.locator('[data-handle=end]').count()) === 1);
+  const cleanShot = async () => { await page.locator('[data-tool=edit]').click(); await settle(); const v = await shot(); await page.locator('[data-tool=mask]').click(); await settle(); return v; };
+  await page.getByLabel('Show overlay').uncheck(); await settle(); // the red overlay tints the canvas; pixel checks look at the real render
+  check('a new mask with no adjustments changes nothing (overlay off)', (await cleanShot()) === preMask);
+  const lset = async (k, v) => { const input = page.locator(`[data-local=${k}] .slider-number`); await input.fill(String(v)); await input.press('Enter'); await settle(); };
+  const skyBefore = await pixelAt(0.3, 0.15), groundBefore = await pixelAt(0.3, 0.92);
+  await lset('exposure', -1.5);
+  const skyAfter = await pixelAt(0.3, 0.15), groundAfter = await pixelAt(0.3, 0.92);
+  const lum = (c) => c[0] + c[1] + c[2];
+  check('local exposure darkens the masked top of the frame and leaves the bottom alone', lum(skyAfter) < lum(skyBefore) - 40 && groundAfter.every((v, i) => Math.abs(v - groundBefore[i]) <= 40), `sky ${lum(skyBefore)}->${lum(skyAfter)}, ground ${lum(groundBefore)}->${lum(groundAfter)}`);
+  check('mask history label is specific', (await topLabel()) === 'Adjust Mask Exposure', await topLabel());
+  await page.screenshot({ path: 'scripts/.out/mask-linear.png' });
+  const endH = await page.locator('[data-handle=end]').boundingBox();
+  const midSky = await pixelAt(0.3, 0.4);
+  await page.mouse.move(endH.x + 7, endH.y + 7); await page.mouse.down(); await page.mouse.move(endH.x + 7, endH.y + 7 + 200, { steps: 6 }); await page.mouse.up(); await settle();
+  check('dragging the gradient end handle reshapes the mask (one history entry)', (await topLabel()) === 'Adjust Linear Gradient' && lum(await pixelAt(0.3, 0.4)) < lum(midSky));
+  await lset('exposure', 0);
+  check('mask at zero adjustment changes nothing', (await cleanShot()) === preMask);
+  // invert + amount
+  await page.getByLabel('Invert mask').check(); await settle();
+  await lset('exposure', -1.5);
+  check('invert mask flips where the adjustment applies', lum(await pixelAt(0.3, 0.92)) < lum(groundBefore) - 40 && lum(await pixelAt(0.3, 0.15)) >= lum(skyBefore) - 40);
+  await page.getByLabel('Invert mask').uncheck(); await settle();
+  await page.getByLabel('Mask Amount value').fill('0'); await page.getByLabel('Mask Amount value').press('Enter'); await settle();
+  check('mask amount 0 turns the effect off', (await cleanShot()) === preMask);
+  // radial
+  await page.locator('[data-mask]').first().locator('button[aria-label="Delete mask"]').click(); await settle();
+  await page.locator('[data-create=radial]').click(); await settle();
+  check('radial gradient: ellipse handles shown', (await page.locator('[data-handle=center]').count()) === 1 && (await page.locator('[data-handle=rotate]').count()) === 1);
+  const cBefore = await pixelAt(0.56, 0.62);
+  await lset('exposure', 1.5);
+  check('radial local exposure brightens the centre', lum(await pixelAt(0.56, 0.62)) > lum(cBefore) + 20);
+  await page.getByLabel('Mask Rotation value').fill('45').catch(() => {});
+  await page.screenshot({ path: 'scripts/.out/mask-radial.png' });
+  // brush
+  await page.locator('[data-create=brush]').click(); await settle();
+  await lset('exposure', -2);
+  const ov = await page.locator('[data-testid=mask-overlay]').boundingBox();
+  const brushBefore = await pixelAt(0.2, 0.75);
+  await page.mouse.move(ov.x + ov.width * 0.1, ov.y + ov.height * 0.75); await page.mouse.down();
+  await page.mouse.move(ov.x + ov.width * 0.35, ov.y + ov.height * 0.75, { steps: 12 }); await page.mouse.up(); await settle();
+  check('brush: a stroke is one "Brush Stroke" history entry', (await topLabel()) === 'Brush Stroke', await topLabel());
+  check('brush: painted area gets the adjustment, unpainted does not', lum(await pixelAt(0.2, 0.75)) < lum(brushBefore) - 40 && lum(await pixelAt(0.85, 0.75)) > 0);
+  const farBefore = await pixelAt(0.85, 0.75);
+  await page.getByRole('button', { name: 'Erase', exact: true }).click();
+  await page.mouse.move(ov.x + ov.width * 0.1, ov.y + ov.height * 0.75); await page.mouse.down();
+  await page.mouse.move(ov.x + ov.width * 0.35, ov.y + ov.height * 0.75, { steps: 12 }); await page.mouse.up(); await settle();
+  check('brush: eraser removes the painted mask again', (await topLabel()) === 'Erase Brush Stroke' && lum(await pixelAt(0.2, 0.75)) >= lum(brushBefore) - 20 && lum(await pixelAt(0.85, 0.75)) === lum(farBefore));
+  await page.screenshot({ path: 'scripts/.out/mask-brush.png' });
+  // colour range
+  await page.locator('[data-create=color]').click(); await settle();
+  await page.getByRole('button', { name: /Click the photo/ }).waitFor();
+  const greenBefore = await pixelAt(0.41, 0.76), redBefore = await pixelAt(0.19, 0.76);
+  const cv2 = await page.locator('[data-testid=mask-overlay]').boundingBox();
+  await page.mouse.click(cv2.x + cv2.width * 0.41, cv2.y + cv2.height * 0.76); await settle();
+  const swatch = await page.locator('[data-testid=color-target]').evaluate((e) => getComputedStyle(e).backgroundColor);
+  const [sr, sg, sb] = swatch.match(/\d+/g).map(Number);
+  check('colour range: eyedropper samples the clicked colour (green)', sg > sr + 30 && sg > sb + 30, swatch);
+  await lset('saturation', -100);
+  const gAfter = await pixelAt(0.41, 0.76), rAfter = await pixelAt(0.19, 0.76);
+  check('colour range: only the green block is desaturated; the red block is untouched', Math.max(...gAfter) - Math.min(...gAfter) < 25 && Math.max(...greenBefore) - Math.min(...greenBefore) > 60 && rAfter.every((v, i) => v === redBefore[i]), `green ${greenBefore}->${gAfter}, red ${redBefore}->${rAfter}`);
+  await page.screenshot({ path: 'scripts/.out/mask-color.png' });
+  // luminance range
+  await page.locator('[data-create=luminance]').click(); await settle();
+  const brightBefore = await pixelAt(0.5, 0.46), darkBefore = await pixelAt(0.5, 0.96);
+  await lset('exposure', -2);
+  check('luminance range: bright tones are darkened, shadows are not', lum(await pixelAt(0.5, 0.46)) < lum(brightBefore) - 60 && lum(await pixelAt(0.5, 0.96)) >= lum(darkBefore) - 6, `bright ${lum(brightBefore)}->${lum(await pixelAt(0.5, 0.46))} dark ${lum(darkBefore)}->${lum(await pixelAt(0.5, 0.96))}`);
+  // combine: add a subtract component
+  await page.locator('[data-add="subtract:radial"]').click(); await settle();
+  check('components: subtract adds a second component to the same mask', (await page.locator('.comp-row').count()) === 2);
+  // overlay toggle + persistence
+  const masksBefore = await page.locator('.mask-list li').count();
+  await page.waitForTimeout(700);
+  await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(800);
+  await page.locator('[data-tool=mask]').click(); await settle();
+  check('masks persist across reload (strokes, shapes, adjustments)', (await page.locator('.mask-list li').count()) === masksBefore && masksBefore >= 4);
+  await page.locator('.mask-list li').first().click(); await settle();
+  await page.screenshot({ path: 'scripts/.out/mask-list.png' });
+  await page.locator('[data-tool=edit]').click(); await settle();
+  await page.locator('.topbar').getByRole('button', { name: 'Reset All' }).click(); await settle();
+  await page.locator('[data-tool=mask]').click(); await settle();
+  check('Reset All removes the masks too', (await page.locator('.mask-list li').count()) === 0);
+  await page.locator('[data-tool=edit]').click(); await settle();
+  check('after Reset All the render equals the untouched original again', (await shot()) === base);
+  await page.locator('[data-param=exposure]').scrollIntoViewIfNeeded().catch(() => {});
+  await setSlider('exposure', 1);
+
   // Undo / redo via keyboard
   await page.locator('body').click({ position: { x: 5, y: 5 } });
   const hist = () => page.locator('.history-list li button.current').innerText();
@@ -201,7 +370,7 @@ try {
   await page.keyboard.press('\\'); await page.waitForTimeout(200);
 
   // Reset all returns to exactly the original render
-  await page.getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(250);
+  await page.locator('.topbar').getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(250);
   const reset = await shot();
   check('Reset All renders identical to the untouched original', reset === base, `${reset} vs ${base}`);
   await page.keyboard.press('Control+z'); await page.waitForTimeout(250);
@@ -209,9 +378,9 @@ try {
 
   // Persistence: edits survive a reload; original bytes intact
   await page.waitForTimeout(700);
-  const savedExposure = await page.locator('.slider[data-param=exposure] .slider-number').inputValue();
+  const savedExposure = await page.locator('[data-param=exposure] .slider-number').inputValue();
   await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(700);
-  check('edits persist across reload', (await page.locator('.slider[data-param=exposure] .slider-number').inputValue()) === savedExposure, `exposure ${savedExposure}`);
+  check('edits persist across reload', (await page.locator('[data-param=exposure] .slider-number').inputValue()) === savedExposure, `exposure ${savedExposure}`);
   const origOk = await page.evaluate(async () => {
     const db = await new Promise((r) => { const q = indexedDB.open('roomlight'); q.onsuccess = () => r(q.result); });
     const rec = await new Promise((r) => { const q = db.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => r(q.result[0]); });

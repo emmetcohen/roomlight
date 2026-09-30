@@ -9,7 +9,7 @@ export interface Shortcut {
   label: string;
   /** Normalised combos: optional "mod+" (Ctrl/Cmd), "shift+", then a lowercase key. */
   keys: string[];
-  run: () => void;
+  run: () => unknown;
 }
 
 export const SHORTCUTS: Shortcut[] = [
@@ -18,6 +18,13 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'before-after', label: 'Toggle before / after', keys: ['\\'], run: () => store.toggleOriginal() },
   { id: 'clipping', label: 'Toggle clipping warnings', keys: ['j'], run: () => store.toggleClipping() },
   { id: 'reset-all', label: 'Reset all edits', keys: ['mod+shift+r'], run: () => store.resetAll() },
+  { id: 'tool-edit', label: 'Edit tool', keys: ['e'], run: () => store.setTool('edit') },
+  { id: 'tool-crop', label: 'Crop tool', keys: ['c'], run: () => store.setTool('crop') },
+  { id: 'tool-mask', label: 'Masking tool', keys: ['m'], run: () => store.setTool('mask') },
+  { id: 'mask-brush', label: 'New brush mask', keys: ['b'], run: () => store.getState().tool === 'mask' && store.createMask('brush') },
+  { id: 'mask-linear', label: 'New linear gradient', keys: ['l'], run: () => store.getState().tool === 'mask' && store.createMask('linear') },
+  { id: 'mask-radial', label: 'New radial gradient', keys: ['r'], run: () => store.getState().tool === 'mask' && store.createMask('radial') },
+  { id: 'done', label: 'Leave crop / masking', keys: ['escape'], run: () => store.getState().tool !== 'edit' && store.setTool('edit') },
   { id: 'next', label: 'Next photo', keys: ['arrowright'], run: () => step(1) },
   { id: 'prev', label: 'Previous photo', keys: ['arrowleft'], run: () => step(-1) },
 ];

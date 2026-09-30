@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { CropPanel } from './editor/CropPanel';
 import { EditPanels } from './editor/EditPanels';
+import { MaskPanel } from './editor/MaskPanel';
 import { Filmstrip } from './editor/Filmstrip';
 import { Histogram } from './editor/Histogram';
 import { HistoryPanel } from './editor/HistoryPanel';
@@ -18,6 +20,7 @@ export default function App() {
   const showOriginal = useEditor((s) => s.showOriginal);
   const messages = useEditor((s) => s.messages);
   const params = useEditor((s) => s.params);
+  const tool = useEditor((s) => s.tool);
   const edited = store.isEdited();
   void params;
 
@@ -42,6 +45,11 @@ export default function App() {
         <div className="brand"><span className="brand-mark" />Roomlight</div>
         <button onClick={() => fileRef.current?.click()}>Import…</button>
         <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,.avif,.gif,.bmp,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.tif,.tiff,.heic,.heif" onChange={(e) => { onFiles(e.target.files); e.target.value = ''; }} />
+        <div className="tools" role="tablist" aria-label="Tools">
+          {([['edit', 'Edit', 'E'], ['crop', 'Crop', 'C'], ['mask', 'Masking', 'M']] as const).map(([id, label, key]) => (
+            <button key={id} role="tab" aria-selected={tool === id} data-tool={id} className={tool === id ? 'on' : ''} disabled={!current} onClick={() => store.setTool(id)} title={`${label} (${key})`}>{label}</button>
+          ))}
+        </div>
         <div className="spacer" />
         <div className="file-name">{current ? `${current.name} · ${current.width}×${current.height}` : ''}</div>
         <div className="spacer" />
@@ -77,7 +85,10 @@ export default function App() {
       <aside className="right">
         <Histogram />
         <div className="right-scroll">
-          {current ? <EditPanels /> : <div className="muted small pad">Import or select a photo to start editing.</div>}
+          {!current ? <div className="muted small pad">Import or select a photo to start editing.</div>
+            : tool === 'crop' ? <CropPanel />
+            : tool === 'mask' ? <MaskPanel />
+            : <EditPanels />}
         </div>
       </aside>
 

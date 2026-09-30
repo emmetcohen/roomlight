@@ -351,3 +351,85 @@ describe('masks stay attached to the picture', () => {
     close(a.c0[0], srgbToLinear(px(src, W, 10, H - 1 - 10)[0] / 255), 1e-9);
   });
 });
+
+import { constrainCrop, cropIsValid, flip, resetCropTool, rotate90, setAspect, swapAspectOrientation } from '../src/geometry/cropActions';
+import { previewPatch, setParams, resetSection, commitParam, previewParam } from '../src/history/editActions';
+import { createHistory, present, undo } from '../src/history/history';
+
+describe('crop actions (what the Crop tool does)', () => {
+  const cropped = P({ crop: { ...fullCrop(), x: 0.1, y: 0.2, w: 0.3, h: 0.4 } });
+  const mirrorX = (d: Uint8ClampedArray, w: number, h: number) => { const o = new Uint8ClampedArray(d.length); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.set(d.subarray((y * w + x) * 4, (y * w + x) * 4 + 4), (y * w + (w - 1 - x)) * 4); return o; };
+
+  it('rotating turns the crop with the picture: the same pixels, rotated', () => {
+    const src = scene();
+    const r0 = renderImage(src, W, H, cropped);
+    const r1 = renderImage(src, W, H, rotate90(cropped, 1));
+    expect([r1.width, r1.height]).toEqual([r0.height, r0.width]);
+    expect(px(r1.data, r0.height, r0.height - 1, 0)).toEqual(px(r0.data, r0.width, 0, 0)); // TL -> TR
+    expect(px(r1.data, r0.height, 0, r0.width - 1)).toEqual(px(r0.data, r0.width, r0.width - 1, r0.height - 1)); // BR -> BL
+    const left = rotate90(cropped, -1), back = rotate90(left, 1);
+    expect(back.orientation).toBe(0);
+    for (const k of ['x', 'y', 'w', 'h'] as const) close(back.crop[k], cropped.crop[k], 1e-12);
+    // four quarter turns come home
+    let q = cropped; for (let i = 0; i < 4; i++) q = rotate90(q, 1);
+    expect(q.orientation).toBe(0); close(q.crop.x, cropped.crop.x, 1e-12); close(q.crop.w, cropped.crop.w, 1e-12);
+  });
+
+  it('flip mirrors the picture on screen and the crop with it, also on a quarter-turned canvas', () => {
+    const src = scene();
+    const base = renderImage(src, W, H, cropped);
+    const f = renderImage(src, W, H, flip(cropped, 'h'));
+    expect(Array.from(f.data)).toEqual(Array.from(mirrorX(base.data, base.width, base.height)));
+    const turned = rotate90(cropped, 1);
+    const tb = renderImage(src, W, H, turned), tf = renderImage(src, W, H, flip(turned, 'h'));
+    expect(Array.from(tf.data)).toEqual(Array.from(mirrorX(tb.data, tb.width, tb.height))); // still a SCREEN-horizontal mirror
+    const twice = flip(flip(cropped, 'v'), 'v');
+    expect(twice.flipV).toBe(0); close(twice.crop.y, cropped.crop.y, 1e-12); close(twice.crop.h, cropped.crop.h, 1e-12);
+  });
+
+  it('aspect presets re-fit the crop to the exact pixel ratio and keep it inside the picture', () => {
+    const aspect = W / H;
+    const sq = setAspect(DEFAULT_PARAMS, '1:1', aspect);
+    const out = renderImage(scene(), W, H, sq);
+    expect(out.width).toBe(out.height);
+    const r = setAspect(setAspect(DEFAULT_PARAMS, '16:9', aspect), '4:5', aspect);
+    close((r.crop.w * W) / (r.crop.h * H), 0.8, 1e-9);
+    const sw = swapAspectOrientation(r, aspect);
+    close((sw.crop.w * W) / (sw.crop.h * H), 1.25, 1e-9);
+    const custom = setAspect(DEFAULT_PARAMS, 'custom', aspect, { w: 7, h: 5 });
+    close((custom.crop.w * W) / (custom.crop.h * H), 1.4, 1e-9);
+    expect(setAspect(r, 'free', aspect).crop).toEqual({ ...r.crop, aspect: 'free' }); // unlocking changes nothing else
+    const rotated = setAspect(P({ straighten: 8 }), '1:1', aspect);
+    expect(cropIsValid(rotated, aspect)).toBe(true); // a preset never reads outside a rotated picture
+  });
+
+  it('geometry edits keep the crop valid automatically, in one undoable step', () => {
+    const aspect = 1.5;
+    let h = createHistory(DEFAULT_PARAMS);
+    h = previewPatch(h, { straighten: 7 }, { aspect });
+    expect(present(h).crop.w).toBeLessThan(1);
+    expect(cropIsValid(present(h), aspect)).toBe(true);
+    h = previewPatch(h, { straighten: 14 }, { aspect });
+    const c14 = present(h).crop.w; expect(c14).toBeLessThan(present(createHistory(h.live ?? DEFAULT_PARAMS)).crop.w + 1e-9);
+    h = commitParam(h, 'straighten');
+    expect(h.entries.length).toBe(2);
+    h = undo(h);
+    expect(present(h).straighten).toBe(0); expect(present(h).crop).toEqual(fullCrop());
+    // without context (e.g. tests, scripts) nothing is constrained
+    expect(present(setParams(createHistory(DEFAULT_PARAMS), { straighten: 7 }, 'x')).crop).toEqual(fullCrop());
+    const n = constrainCrop(P({ straighten: 7 }), DEFAULT_PARAMS, aspect);
+    expect(n.crop.w).toBeLessThan(1);
+    expect(constrainCrop(P({ exposure: 1 }), DEFAULT_PARAMS, aspect).crop).toBe(DEFAULT_PARAMS.crop); // non-geometry edits don't touch the crop
+  });
+
+  it('resets: the crop tool resets rectangle, orientation, flips and angle; section reset matches', () => {
+    let p = rotate90(flip(setAspect(P({ straighten: 5 }), '3:2', 1.5), 'h'), 1);
+    p = resetCropTool(p);
+    expect(p.orientation).toBe(0); expect(p.flipH + p.flipV).toBe(0); expect(p.straighten).toBe(0); expect(p.crop).toEqual(fullCrop());
+    let h = createHistory(rotate90(P({ straighten: 5 }), 1));
+    h = resetSection(h, 'crop');
+    expect(present(h).orientation).toBe(0); expect(present(h).straighten).toBe(0);
+    h = previewParam(createHistory(DEFAULT_PARAMS), 'geoScale', 60, { aspect: 1.5 });
+    expect(present(h).crop.w).toBeLessThan(1); // zooming out exposes empty canvas, so the crop follows
+  });
+});

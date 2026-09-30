@@ -2,6 +2,7 @@ import { curvesAreIdentity } from '../image-engine/curves';
 import { SECTIONS, SLIDERS, isDefault, keysOfSection, type SectionId } from '../image-engine/params';
 import { Panel } from '../ui/Panel';
 import { Slider } from '../ui/Slider';
+import { GeometryPanel, LensPanel } from './CropPanel';
 import { CurveEditor } from './CurveEditor';
 import { GradingPanel } from './GradingPanel';
 import { MixerPanel } from './MixerPanel';
@@ -37,6 +38,8 @@ export function EditPanels() {
       <Panel title="Grain" defaultOpen={false} {...reset('grain')}>
         {SLIDERS.filter((s) => s.section === 'grain').map((s) => <Slider key={s.key} param={s.key} />)}
       </Panel>
+      <Panel title="Geometry" defaultOpen={false} {...reset('geometry')}><GeometryPanel /></Panel>
+      <Panel title="Lens Corrections" defaultOpen={false} onReset={() => store.resetSection('lens')} resetDisabled={isDefault(params, keysOfSection('lens')) && params.lensProfile === 'none'}><LensPanel /></Panel>
     </>
   );
 }

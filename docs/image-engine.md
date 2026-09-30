@@ -17,7 +17,8 @@ ORIGINAL (Blob, never modified)  +  EditParams (≈10 numbers)  ──render─�
 ## Pipeline
 
 `src/image-engine/pipeline.ts` defines the pipeline as an **ordered list of stages**
-(`whiteBalance, exposure, tone, local, curve, mixer, grading, color, vignette, grain`). Each stage has
+(`lens, whiteBalance, exposure, tone, local, curve, mixer, grading, color, masks, vignette, grain`),
+preceded by the **source sampler** (crop · rotate · perspective · lens distortion · chromatic aberration). Each stage has
 
 * a CPU implementation (`model.ts`) — the reference/spec, used by tests and as a fallback, and
 * a GLSL function (`glsl.ts`) — used for real-time rendering.
@@ -171,6 +172,97 @@ any channel at 255 (red) / 0 (blue). The "clipping" toggle on the image uses the
   value on all channels (monochrome grain). Zero-mean, deterministic (no flicker between renders).
 * Because cell size scales with the output size, grain looks alike on preview and export at the same aspect, but
   is not pixel-identical across resolutions.
+
+## Geometry, crop and lens (Phase 3)
+
+All of this is *inverse mapping*: for every output pixel the renderer computes which position in the
+**original** to read, then does one bilinear read (in linear light). There are no intermediate resampled
+images, nothing is baked in, and the original is never modified. `src/geometry/transform.ts` is the spec.
+
+### Transform matrix (Geometry panel + Straighten + orientation)
+* **Coordinates:** source pixels, origin at the centre, +y down (positive angles are clockwise on screen).
+  The *canvas* is the source after orientation; the crop rectangle is normalised in canvas space.
+* **Forward model (source → canvas):** `M = T · Rs · S · A · P · Rg · O`, applied right to left:
+  `O` flips then k×90° turns · `Rg` Rotate (±10°) · `P` perspective · `A` aspect squeeze · `S` scale · `Rs` Straighten (±45°) · `T` offset.
+* **Perspective `P`** is a homography with third row `(h/Rn, v/Rn, 1)`, `h = Horizontal·0.35/100`,
+  `v = Vertical·0.35/100`, `Rn` = half the canvas diagonal, so the effect is independent of resolution.
+  `x' = x/w, y' = y/w, w = 1 + (h·x + v·y)/Rn`. + Vertical widens the top and narrows the bottom (corrects looking up at a building).
+* **Aspect** scales x by `2^(0.4·a)` and y by the inverse (area preserving). **Offset** ±100 = ±half the canvas.
+* **Rendering:** `p_canvas = ((crop.xy + uv·crop.wh) − ½)·canvasSize`, `p_src = project(M⁻¹, p_canvas)`. Where `p_src`
+  falls outside the original the pixel is transparent (never smeared). `M` is inverted in JS (3×3) and uploaded as a `mat3`.
+* **Space / linearity:** geometry is resampling in linear light; projective (nonlinear in position). No masks involved.
+* **Performance:** one extra 3×3 multiply per pixel; free when the geometry is the identity (fast path).
+
+### Crop (`crop` rectangle + aspect preset) and orientation
+* The crop is four normalised numbers (+ preset). Changing it never touches pixels; the Crop tool draws the *whole* rotated
+  canvas with the rectangle on top, so the original is always available to re-crop. The rendered output size follows the crop.
+* Presets: Free, Original, 1:1, 4:5, 3:2, 4:3, 16:9, Custom w:h, with a landscape/portrait swap. A locked ratio is exact for
+  corner and edge drags (`dragCrop`). Rotate left/right also turns the crop rectangle; flips act on the original before other adjustments.
+* **Keeping the crop valid:** after any geometry edit the crop is shrunk about its centre (bisection, `fitCropInside`) until all four
+  corners read from inside the original — so Straighten never shows empty corners. It only ever shrinks; *Reset crop* restores the framing.
+
+### Lens corrections (`lensDistortion`, `lensVignetting`, `lensCA`, `lensProfile`)
+* **Radial model**, `rc` = distance from the optical centre / half-diagonal of the source:
+  * Distortion: read the source at `rs = rc·(1 − a·rc²)`, `a = distortion/100·0.25` (+ corrects barrel, − corrects pincushion).
+  * Chromatic aberration (lateral): red is read at `rs·(1+s)`, blue at `rs·(1−s)`, `s = ca/100·0.004`; green is the reference.
+  * Vignetting (a normal pipeline stage, first, in linear light): `gain = 2^(vig/100 · 2 · rc²)`.
+* **Profiles** (`src/lens/profiles.ts`): `{distortion, vignetting, chromaticAberration}` in slider units; effective = profile + manual sliders.
+  **No measured lens database ships.** The two profiles in the list are labelled *(example)* and are illustrative numbers;
+  real profiles are added with `registerLensProfile`.
+* **Approximations:** a 2-term-at-most radial polynomial (one coefficient), centred on the frame, purely radial CA. Tangential
+  distortion, per-focal-length interpolation and per-channel polynomial CA are future profile fields.
+
+### Upright — automatic perspective (`src/geometry/upright.ts`)
+Sobel edges (after a light blur) of a 384px copy → samples (position, direction, weight). Edges within 20° of vertical/horizontal in
+the current result are assumed to be lines that should be straight. A coordinate search (coarse scan + golden section) minimises the
+weighted angular error of those lines **after applying the real geometry matrix** (truncated-quadratic loss ignores outliers; a
+small penalty prefers gentle corrections). Modes: Level (Straighten), Vertical, Auto (level + vertical), Full (+ horizontal).
+If fewer than ~40 suitable edges exist or the error doesn't improve meaningfully, it reports that and changes nothing.
+
+## Masks and local adjustments (Phase 4)
+
+A mask is a greyscale field `m(x,y) ∈ [0,1]`: 0 = adjustment doesn't apply, 1 = fully, in between = partially.
+Model: `Mask { name, enabled, invert, amount, components[], adjust{} }`. **Mask space** is centred source pixels divided by the long
+edge, so masks are attached to the picture: they follow it through crop, rotate, straighten and perspective (tested).
+
+### Components and combining
+`linear`, `radial`, `brush`, `color` (range), `luminance` (range), `segment` (AI, see below). Each component has `op`
+(`add | subtract | intersect`) and `invert`. Fuzzy-set rules, starting from 0 (or from 1 if the first component is not *add*):
+add `m = max(m, c)` · subtract `m = min(m, 1−c)` · intersect `m = min(m, c)`. Then the mask's invert (`1−m`) and amount (`·amount/100`).
+
+| component | value | parameters |
+|---|---|---|
+| Linear gradient | `t = ((p−a)·(b−a))/|b−a|²`, `m = 1 − smoothstep(½−f/2, ½+f/2, t)` | start a (full), end b (none), feather f (0–100, rotation = angle of a→b) |
+| Radial gradient | `d = |R(−θ)(p−c) / (rx,ry)|`, `m = 1 − smoothstep(1−f, 1, d)` | centre, rx, ry, rotation θ, feather f, invert |
+| Colour range | `d = √((½ΔL)² + Δa² + Δb²)` in OKLab vs the target, `m = 1 − smoothstep(0.35r, r, d)`, `r = 0.02 + 0.3·range/100` | target (eyedropper on the photo), range |
+| Luminance range | `m = smoothstep(lo−s, lo+s, v)·(1 − smoothstep(hi−s, hi+s, v))` on perceptual luminance `v` (ends at 0 / 1 are open) | min, max, smoothness |
+| Brush | raster sampled bilinearly (below) | strokes |
+
+**Range masks look at the original colour** (after geometry/lens sampling, before any edit), so adjusting inside a mask never moves it.
+
+### Brush (`src/masks/brush.ts`)
+Strokes (points with pen pressure, radius, feather, flow, density, erase) are the stored data: tiny, resolution independent, JSON-persistable
+and cheap in undo history. They are rasterised into a 1024² 8-bit field over mask-space [−½, ½]². Dabs are stamped every 20% of the diameter
+with falloff `1 − smoothstep(1−feather, 1, r)` and opacity `flow`; dabs accumulate *within* a stroke (`s += (1−s)·a`), so low flow builds up as you
+paint; the stroke is capped by `density` and added (`1−(1−m)(1−t)`) or erased (`m·(1−t)`). Pressure scales radius (30–100%) and flow when the
+device reports it. Rasters are cached by stroke-list identity and extended incrementally while painting. The GPU holds them in one 2D-array texture.
+
+### Local adjustments
+Exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance, saturation, texture, clarity, dehaze.
+* **Basic adjustments** run in a `masks` stage after the global colour stage, in the same order as the global pipeline (WB → exposure → tone → colour),
+  using the *same functions* as the global stages with **every amount scaled by the mask value** `m`: exposure = `2^(stops·m)`, tone/colour sliders × m.
+  So m = 0 leaves the pixel untouched, m = 1 is identical to applying the adjustment globally (tested), and m = ½ is exactly half the stops for exposure
+  and approximately half for the others. Several masks apply one after another.
+* **Texture / clarity / dehaze** are added to the global amounts *inside the `local` stage*: `amount = global + Σ mask_i·local_i` (clamped to ±1), using
+  the same blur fields — so a mask can sharpen mid-tone contrast or remove haze in one region without any extra blur pass.
+* **Performance:** up to 8 masks, 16 components in total and 8 raster layers (uniform budget; the UI explains when a limit is reached). Everything is
+  evaluated per pixel in the same shader pass; nothing runs for a mask with no adjustments except the overlay.
+* **Overlay:** the masking tool tints the selected mask red, computed by the same shader from the same mask value (what you see is what is applied).
+
+### Subject / Sky / Background (AI selection) — architecture only
+`src/masks/segmentation.ts` defines a `SegmentationProvider { available(), segment(image, kind) → 1024² mask }` registry. **No model is bundled**, so the
+three buttons are disabled and say so; nothing pretends to detect a subject. A registered provider's raster is used exactly like a brush raster (unit
+tested with a clearly-named test double). Rasters from providers are not persisted yet (they would be recomputed).
 
 ## Import
 `src/import/decoders.ts` is a decoder registry. Only the browser decoder (JPEG/PNG/WebP/…) is
