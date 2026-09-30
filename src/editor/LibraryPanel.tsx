@@ -25,6 +25,7 @@ export function LibraryPanel() {
   const albums = useEditor((s) => s.albums);
   const photos = useEditor((s) => s.photos);
   const selection = useEditor((s) => s.selection);
+  useEditor((s) => s.currentId); // the album buttons act on the open photo
   const [newName, setNewName] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   const [editName, setEditName] = useState('');

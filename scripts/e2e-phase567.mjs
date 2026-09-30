@@ -268,7 +268,8 @@ try {
   await page.locator('label:has-text("Remove location") input').check();
 
   // --- copyright notice rewrites the EXIF block
-  await page.locator('input[aria-label="Copyright notice"]').fill('(c) 2026 Test Photographer');
+  await page.locator('input[aria-label="Copyright notice"]').click(); await page.keyboard.type('(c) 2026 Test Photographer');
+  check('typing in a dialog field keeps the focus (no focus stealing on re-render)', (await page.locator('input[aria-label="Copyright notice"]').inputValue()) === '(c) 2026 Test Photographer');
   r = await doExport(); ex = exif.parseExif(new Uint8Array(r.bytes));
   check('a copyright notice is written into the EXIF', ex?.copyright === '(c) 2026 Test Photographer' && ex.model === 'Model One' && ex.gps === undefined, JSON.stringify(ex));
   await page.locator('input[aria-label="Copyright notice"]').fill('');
@@ -281,7 +282,8 @@ try {
 
   // --- resize + formats
   await page.locator('select[aria-label=Resize]').selectOption('longEdge');
-  await page.locator('input[aria-label="Long edge in pixels"]').fill('600');
+  await page.locator('input[aria-label="Long edge in pixels"]').click(); await page.keyboard.type('600'); await page.keyboard.press('Enter');
+  check('typing a size digit by digit works (no clamping mid-typing)', (await page.locator('input[aria-label="Long edge in pixels"]').inputValue()) === '600');
   check('the dialog previews the resized output', /600 × 400 px/.test(await page.locator('[data-testid=export-size]').innerText()));
   r = await doExport();
   check('long-edge resize gives 600 × 400', dim(jpegSize(r.bytes)) === '600x400', JSON.stringify(jpegSize(r.bytes)));
@@ -427,7 +429,7 @@ try {
   // --- batch export as one ZIP, validated by Python's zipfile
   await blur(); await page.keyboard.press('Control+a');
   await page.keyboard.press('Control+Shift+E'); await page.locator('[role=dialog][aria-label=Export]').waitFor();
-  await page.locator('select[aria-label=Resize]').selectOption('longEdge'); await page.locator('input[aria-label="Long edge in pixels"]').fill('400');
+  await page.locator('select[aria-label=Resize]').selectOption('longEdge'); await page.locator('input[aria-label="Long edge in pixels"]').fill('400'); await page.keyboard.press('Enter');
   const nPhotos = await page.locator('[data-photo]').count();
   check('"Selected" is offered and pre-chosen for a multi-selection', (await page.locator('button:has-text("Selected (")').getAttribute('class'))?.includes('on'));
   r = await doExport();

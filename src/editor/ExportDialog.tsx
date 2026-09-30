@@ -1,6 +1,7 @@
 import { outputSize } from '../geometry/transform';
 import { FORMAT_INFO, formatFilename, resolveSize, type ExportFormat, type MetadataMode, type ResizeMode, type SharpenLevel } from '../export/types';
 import { Dialog } from '../ui/Dialog';
+import { NumberField } from '../ui/NumberField';
 import { SliderView } from '../ui/Slider';
 import { store, useEditor } from './store';
 
@@ -56,9 +57,9 @@ export function ExportDialog() {
           <select aria-label="Resize" value={s.resize.mode} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, mode: e.target.value as ResizeMode } }))}>
             <option value="original">Full size (as edited)</option><option value="longEdge">Long edge</option><option value="fit">Fit in a box</option><option value="percent">Percent</option>
           </select>
-          {s.resize.mode === 'longEdge' && <><input className="text num wide-num" aria-label="Long edge in pixels" type="number" min={16} value={s.resize.longEdge} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, longEdge: +e.target.value } }))} /><span className="muted">px</span></>}
-          {s.resize.mode === 'fit' && <><input className="text num wide-num" aria-label="Box width" type="number" min={16} value={s.resize.width} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, width: +e.target.value } }))} /><span className="muted">×</span><input className="text num wide-num" aria-label="Box height" type="number" min={16} value={s.resize.height} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, height: +e.target.value } }))} /></>}
-          {s.resize.mode === 'percent' && <><input className="text num wide-num" aria-label="Percent" type="number" min={1} max={400} value={s.resize.percent} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, percent: +e.target.value } }))} /><span className="muted">%</span></>}
+          {s.resize.mode === 'longEdge' && <><NumberField label="Long edge in pixels" min={16} max={30000} value={s.resize.longEdge} onCommit={(v) => set((x) => ({ ...x, resize: { ...x.resize, longEdge: v } }))} /><span className="muted">px</span></>}
+          {s.resize.mode === 'fit' && <><NumberField label="Box width" min={16} max={30000} value={s.resize.width} onCommit={(v) => set((x) => ({ ...x, resize: { ...x.resize, width: v } }))} /><span className="muted">×</span><NumberField label="Box height" min={16} max={30000} value={s.resize.height} onCommit={(v) => set((x) => ({ ...x, resize: { ...x.resize, height: v } }))} /></>}
+          {s.resize.mode === 'percent' && <><NumberField label="Percent" min={1} max={400} value={s.resize.percent} onCommit={(v) => set((x) => ({ ...x, resize: { ...x.resize, percent: v } }))} /><span className="muted">%</span></>}
         </div>
         {(s.resize.mode === 'longEdge' || s.resize.mode === 'fit') && <label className="chk exp-indent"><input type="checkbox" checked={s.resize.noEnlarge} onChange={(e) => set((x) => ({ ...x, resize: { ...x.resize, noEnlarge: e.target.checked } }))} />Don’t enlarge</label>}
         {cur && <div className="readout" data-testid="export-size">{out.w} × {out.h} px · {((out.w * out.h) / 1e6).toFixed(1)} MP{native.w !== out.w ? ` (full size ${native.w} × ${native.h})` : ''}</div>}
