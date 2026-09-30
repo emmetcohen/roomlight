@@ -1,7 +1,7 @@
 import { COLOR_LABELS, LABEL_CSS, filterIsActive } from '../library/types';
 import { store, useEditor, type PhotoSummary } from './store';
 
-function Badges({ p }: { p: PhotoSummary }) {
+export function Badges({ p }: { p: PhotoSummary }) {
   const { rating, flag, label } = p.info;
   return (
     <>

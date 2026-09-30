@@ -28,6 +28,9 @@ describe('colour space', () => {
   });
 });
 
+import { applyAllDetail, detailParamsOf } from '../src/image-engine/detail';
+const renderRawBase = (...a: Parameters<typeof renderRaw>) => renderRaw(...a);
+
 describe('identity and non-destruction', () => {
   it('default parameters reproduce the original exactly (all 8-bit values)', () => {
     const src = testImage();
@@ -54,7 +57,12 @@ describe('identity and non-destruction', () => {
         : s.key === 'gradeBlending' || s.key === 'gradeBalance' ? tinted // only matter once something is tinted
         : s.section === 'vignette' && s.key !== 'vignetteAmount' ? { vignetteAmount: -60 } // modifiers need an active vignette
         : s.section === 'grain' && s.key !== 'grainAmount' ? { grainAmount: 50 }
+        : s.key.startsWith('sharp') && s.key !== 'sharpAmount' ? { sharpAmount: 80 } // modifiers need sharpening on
+        : (s.key === 'nrLumaDetail' || s.key === 'nrLumaContrast') ? { nrLuma: 50 }
+        : (s.key === 'nrColorDetail' || s.key === 'nrColorSmooth') ? { nrColor: 60 }
         : {};
+      // Detail (sharpening / noise reduction) is a pre-pass over the source pixels, so include it in the render
+      const renderRaw = (px: Uint8ClampedArray, w: number, h: number, p: EditParams) => renderRawBase(applyAllDetail(px, w, h, detailParamsOf(p as unknown as Record<string, unknown>), p.masks), w, h, p);
       const ref = renderRaw(src, SCENE_W, SCENE_H, P(prep));
       const isHue = s.key.startsWith('grade_') && s.key.endsWith('_hue'); // 360° wraps to 0°, so test interior angles
       for (const v of isHue ? [90, 200] : [s.min, s.max]) {

@@ -13,14 +13,14 @@ export type EditHistory = History<EditParams>;
 export type ParamPatch = Partial<ScalarParams>;
 
 /** Extra context some edits need: the source's width/height, so geometry changes can keep the crop inside the picture. */
-export interface EditCtx { aspect: number }
+export interface EditCtx { aspect: number; /** false = Constrain Crop is off: geometry edits leave the crop alone (empty corners may show). Default true. */ constrain?: boolean }
 
 const CURVE_LABEL: Record<CurveChannel, string> = { rgb: 'RGB', r: 'Red', g: 'Green', b: 'Blue' };
 
 function patched(base: EditParams, patch: ParamPatch, ctx?: EditCtx): EditParams {
   const next = { ...base };
   for (const [k, v] of Object.entries(patch)) (next as unknown as Record<string, number>)[k] = clampParam(k as ParamKey, v as number);
-  return ctx ? constrainCrop(next, base, ctx.aspect) : next;
+  return ctx && ctx.constrain !== false ? constrainCrop(next, base, ctx.aspect) : next;
 }
 
 /** Arbitrary edit of the parameters (masks, crop, ...) as a live update; recorded on commitLabel. */
@@ -63,7 +63,8 @@ export function resetCurve(h: EditHistory, channel: CurveChannel | 'all'): EditH
   const cur = present(h);
   const fresh = defaultCurves();
   const curves = channel === 'all' ? fresh : { ...cur.curves, [channel]: fresh[channel] };
-  return apply(h, { ...cur, curves }, channel === 'all' ? 'Reset Tone Curve' : `Reset ${CURVE_LABEL[channel]} Curve`, paramsEqual);
+  const par = channel === 'all' ? { curveHighlights: 0, curveLights: 0, curveDarks: 0, curveShadows: 0 } : {};
+  return apply(h, { ...cur, ...par, curves }, channel === 'all' ? 'Reset Tone Curve' : `Reset ${CURVE_LABEL[channel]} Curve`, paramsEqual);
 }
 
 // ---- resets

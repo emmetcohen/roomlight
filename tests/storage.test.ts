@@ -37,7 +37,7 @@ describe('IndexedDB storage v2 (library, albums, presets)', () => {
     const { IDBFactory: FDBFactory } = await import('fake-indexeddb');
     const db = new IndexedDbPhotoStore(new FDBFactory());
     await db.putPhoto({ id: 'p1', name: 'a.jpg', type: 'image/jpeg', size: 1, width: 1, height: 1, addedAt: 1, original: new Blob([new Uint8Array([1])]), thumbnail: null });
-    await db.putInfo({ photoId: 'p1', rating: 4, flag: 'pick', label: 'red', title: 'T', caption: 'C', keywords: ['a', 'b'], albumIds: ['al1'], exif: null });
+    await db.putInfo({ photoId: 'p1', rating: 4, flag: 'pick', label: 'red', title: 'T', caption: 'C', keywords: ['a', 'b'], albumIds: ['al1'], snapshots: [], exif: null });
     expect((await db.listInfo())[0]).toMatchObject({ rating: 4, flag: 'pick', keywords: ['a', 'b'] });
     await db.putAlbum({ id: 'al1', name: 'Best', createdAt: 5 });
     await db.putAlbum({ id: 'al2', name: 'Other', createdAt: 3 });
@@ -76,7 +76,7 @@ describe('IndexedDB storage v2 (library, albums, presets)', () => {
     expect((await db.listPhotos()).map((p) => p.id)).toEqual(['old']);
     expect(normalizeParams((await db.getEdits('old'))?.edits).exposure).toBe(0.5);
     expect(await db.listInfo()).toEqual([]); // new stores exist and are empty
-    await db.putInfo({ photoId: 'old', rating: 2, flag: 'none', label: null, title: '', caption: '', keywords: [], albumIds: [] });
+    await db.putInfo({ photoId: 'old', rating: 2, flag: 'none', label: null, title: '', caption: '', keywords: [], albumIds: [], snapshots: [] });
     expect(await db.listInfo()).toHaveLength(1);
   });
 });

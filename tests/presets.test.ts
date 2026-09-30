@@ -30,7 +30,7 @@ describe('copy groups', () => {
 describe('extract / apply', () => {
   it('extracts only the chosen groups', () => {
     const d = extractPreset(edited(), ['tone', 'curve']);
-    expect(Object.keys(d).sort()).toEqual(['blacks', 'contrast', 'curves', 'exposure', 'highlights', 'shadows', 'whites']);
+    expect(Object.keys(d).sort()).toEqual(['blacks', 'contrast', 'curveDarks', 'curveHighlights', 'curveLights', 'curveShadows', 'curves', 'exposure', 'highlights', 'shadows', 'whites']);
     expect(groupsIn(d).sort()).toEqual(['curve', 'tone']);
   });
 

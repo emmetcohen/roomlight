@@ -14,14 +14,16 @@ import type { EditParams } from '../image-engine/params';
 import { WebGLRenderer } from '../image-engine/webglRenderer';
 import { extractExifSegment, injectExif, normalizeExifSegment, parseExif, type ExifInfo } from '../metadata/exif';
 import { buildExifSegment } from '../metadata/exifWriter';
+import { applyAllDetail } from '../image-engine/detail';
+import { detailInputOf } from '../image-engine/detailInput';
 import { applySpots } from '../retouch/apply';
 import { readPixels } from '../retouch/source';
 import { sharpenInPlace } from './sharpen';
 import { FORMAT_INFO, MAX_EXPORT_PIXELS, SHARPEN_AMOUNT, resolveSize, sharpenSigma, type ExportSettings } from './types';
 
-export interface ExportJob { original: Blob; name: string; type: string; params: EditParams; settings: ExportSettings }
+export interface ExportJob { original: Blob; name: string; type: string; params: EditParams; settings: ExportSettings; /** Width of the original file in pixels (Detail radii are defined at this size). */ fullWidth: number }
 export interface ExportResult { bytes: Uint8Array; mime: string; ext: string; width: number; height: number; notes: string[] }
-export type ExportStage = 'Decoding' | 'Retouching' | 'Rendering' | 'Sharpening' | 'Encoding';
+export type ExportStage = 'Decoding' | 'Retouching' | 'Detail' | 'Rendering' | 'Sharpening' | 'Encoding';
 
 type AnyCanvas = OffscreenCanvas | HTMLCanvasElement;
 const makeCanvas = (w: number, h: number): AnyCanvas => (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h }));
@@ -64,11 +66,13 @@ export async function renderExport(job: ExportJob, progress: (s: ExportStage) =>
       bitmap.close(); bitmap = scaled;
     }
 
-    if (params.spots.some((s) => s.enabled)) {
+    const detail = detailInputOf(params);
+    if (params.spots.some((s) => s.enabled) || detail) {
       progress('Retouching');
       const px = readPixels(bitmap);
-      const r = applySpots(px.data, px.width, px.height, params.spots);
-      gl.setImage(r.changed ? new ImageData(r.data as Uint8ClampedArray<ArrayBuffer>, px.width, px.height) : bitmap);
+      let data = applySpots(px.data, px.width, px.height, params.spots).data;
+      if (detail) { progress('Detail'); data = applyAllDetail(data, px.width, px.height, detail.params, detail.masks, bitmap.width / job.fullWidth); }
+      gl.setImage(data !== px.data ? new ImageData(data as Uint8ClampedArray<ArrayBuffer>, px.width, px.height) : bitmap);
     } else gl.setImage(bitmap);
 
     progress('Rendering');

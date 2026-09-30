@@ -12,8 +12,14 @@ export type MaskOp = 'add' | 'subtract' | 'intersect';
 export const LOCAL_KEYS = [
   'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks',
   'temperature', 'tint', 'vibrance', 'saturation', 'texture', 'clarity', 'dehaze',
+  'sharpness', 'noise',
 ] as const;
 export type LocalKey = (typeof LOCAL_KEYS)[number];
+/** Local keys that are NOT global sliders (their ranges live here; the others come from the slider registry). */
+export const LOCAL_EXTRA: Partial<Record<LocalKey, { label: string; min: number; max: number; default: number }>> = {
+  sharpness: { label: 'Sharpness', min: -100, max: 100, default: 0 },
+  noise: { label: 'Noise', min: 0, max: 100, default: 0 },
+};
 export type LocalAdjust = Partial<Record<LocalKey, number>>;
 
 export interface BrushPoint { x: number; y: number; p: number } // p: pen pressure 0..1 (1 for mouse)

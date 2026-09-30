@@ -203,3 +203,40 @@ button.preset { padding: 2px 8px; font-size: 11px; }
 .stage { position: relative; } .stage.zoomed .viewer-canvas { box-shadow: none; }
 .zoom-bar { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 4px; background: #000a; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 .zoom-bar button { padding: 1px 8px; font-size: 11px; } .zoom-readout { color: var(--muted); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- Layout: Library | Edit, tool strip on the far right, image toolbar under the photo */
+.app { grid-template-columns: 250px 1fr 340px 50px; grid-template-rows: 42px 1fr 92px; grid-template-areas: 'top top top top' 'left center right strip' 'bottom bottom bottom bottom'; }
+.app.mode-library { grid-template-columns: 250px 1fr 340px; grid-template-rows: 42px 1fr; grid-template-areas: 'top top top' 'left center right'; }
+.mode-switch button { padding: 3px 16px; font-size: 12px; font-weight: 600; }
+.mode-switch button.on { background: #2f2a1e; color: var(--accent); border-color: var(--accent); }
+.tool-strip { grid-area: strip; background: var(--bg-2); border-left: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; }
+.tool-strip button { width: 38px; height: 38px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: none; border-color: transparent; color: var(--muted); }
+.tool-strip button:hover:not(:disabled) { color: var(--text); background: var(--bg-3); }
+.tool-strip button.on { color: var(--accent); background: #2f2a1e; border-color: var(--accent-dim); }
+.viewer-shell { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; }
+.viewer-shell .viewer { position: relative; inset: auto; flex: 1; min-height: 0; }
+.image-toolbar { flex: none; height: 36px; display: flex; align-items: center; justify-content: center; gap: 18px; border-top: 1px solid var(--line); background: var(--bg-2); padding: 0 12px; }
+.tb-group { display: flex; align-items: center; gap: 4px; }
+.image-toolbar button { padding: 2px 10px; font-size: 11px; }
+.image-toolbar .zoom-readout { color: var(--muted); min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+.crop-tabs { margin: 8px 12px; }
+.left .panel-body { padding: 8px 10px; }
+.left .history-list { padding: 0; }
+.left .album-list { margin: 0; }
+.left .lib-row { margin: 4px 0; }
+.left .shortcuts { padding: 0; }
+.upright button:disabled { opacity: .35; }
+
+/* Library grid */
+.library-view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; }
+.lib-toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
+.lib-toolbar .spacer { flex: 1; }
+.photo-grid { flex: 1; overflow: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); grid-auto-rows: 150px; gap: 10px; align-content: start; }
+.cell { position: relative; padding: 0; background: #0d0d0e; border: 2px solid transparent; border-radius: 4px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.cell img { max-width: 100%; max-height: 100%; display: block; }
+.cell.current { border-color: var(--accent); } .cell.selected { border-color: #4f8cff; } .cell.current.selected { border-color: var(--accent); box-shadow: 0 0 0 1px #4f8cff; }
+.cell.rejected img { opacity: .4; filter: grayscale(.6); }
+.cell-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px 2px 6px; font-size: 10px; background: linear-gradient(transparent, #000c); color: #ddd; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 40px; }
+.cell .t-stars { bottom: 3px; left: 4px; z-index: 1; }
+.empty.static { position: static; flex: 1; }
+.badge.busy { white-space: nowrap; }

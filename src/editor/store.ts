@@ -13,7 +13,7 @@ import type { CurveChannel, CurvePoint } from '../image-engine/curves';
 import { DEFAULT_PARAMS, isDefault, normalizeParams, type EditParams, type ParamKey, type SectionId } from '../image-engine/params';
 import { canRedo, canUndo, createHistory, jumpTo, present, redo, undo } from '../history/history';
 import { applyEdit, commitCurve, commitLabel, commitParam, previewCurve, previewEdit, previewParam, previewPatch, resetAll, resetCurve, resetKeys, resetParam, resetSection, setParams, type EditCtx, type EditHistory, type ParamPatch } from '../history/editActions';
-import { cropIsValid, flip as flipCrop, resetCropTool, rotate90 as rotateCrop, setAspect, swapAspectOrientation } from '../geometry/cropActions';
+import { cropIsValid, flip as flipCrop, resetCropTool, rotate90 as rotateCrop, setAspect, straightenFromLine, swapAspectOrientation } from '../geometry/cropActions';
 import type { AspectPreset, Crop } from '../geometry/crop';
 import { geoOf, makeGeoMap, outputSize, outputToSource } from '../geometry/transform';
 import { edgeSamples, estimateUpright, grayFromRgba, type UprightMode } from '../geometry/upright';
@@ -78,6 +78,9 @@ export interface LoadedImage {
 }
 
 export type Tool = 'edit' | 'crop' | 'mask' | 'retouch';
+export type Mode = 'library' | 'edit';
+export type CropTab = 'crop' | 'geometry';
+export type CropGuides = 'none' | 'thirds' | 'grid';
 export type DialogId = 'copy' | 'paste' | 'savePreset' | 'export';
 
 export interface RetouchSettings {
@@ -98,7 +101,13 @@ export interface BrushSettings {
 export const brushRadius = (size: number) => 0.004 + 0.15 * (size / 100) ** 2;
 
 export interface EditorState {
+  mode: Mode;
   tool: Tool;
+  cropTab: CropTab;
+  cropGuides: CropGuides;
+  straightenTool: boolean;
+  constrainCrop: boolean;
+  cropEntryIndex: number | null;
   selectedMask: string | null;
   selectedComp: string | null;
   selectedSpot: string | null;
@@ -142,7 +151,13 @@ export interface EditorState {
 }
 
 const initial: EditorState = {
+  mode: 'edit',
   tool: 'edit',
+  cropTab: 'crop',
+  cropGuides: 'thirds',
+  straightenTool: false,
+  constrainCrop: true,
+  cropEntryIndex: null,
   selectedMask: null,
   selectedComp: null,
   selectedSpot: null,
@@ -224,7 +239,7 @@ export class EditorStore {
     await this.db.putEdits({ photoId: id, version: EDIT_SCHEMA_VERSION, edits: present(h), updatedAt: Date.now() });
   }
 
-  private toast(msg: string) {
+  toast(msg: string) {
     this.set({ messages: [...this.state.messages, msg].slice(-4) });
   }
   dismissMessage = (i: number) => this.set({ messages: this.state.messages.filter((_, j) => j !== i) });
@@ -377,7 +392,7 @@ export class EditorStore {
   /** Source width/height, so geometry edits can keep the crop inside the picture. */
   private ctx(): EditCtx | undefined {
     const b = this.state.image?.bitmap;
-    return b ? { aspect: b.width / b.height } : undefined;
+    return b ? { aspect: b.width / b.height, constrain: this.state.constrainCrop } : undefined;
   }
   previewParam = (key: ParamKey, value: number) => { const h = this.h(); if (h) this.setHistory(previewParam(h, key, value, this.ctx()), false); };
   commitParam = (key: ParamKey, coalesce = false) => { const h = this.h(); if (h) this.setHistory(commitParam(h, key, coalesce)); };
@@ -426,7 +441,33 @@ export class EditorStore {
   // ---------------------------------------------------------------- tools
   openDialog = (dialog: DialogId) => { if (this.state.currentId) this.set({ dialog, ...(dialog === 'export' ? { exportSummary: null, exportScope: this.state.selection.length > 1 ? 'selected' as const : 'open' as const } : {}) }); };
   closeDialog = () => this.set({ dialog: null });
-  setTool = (tool: Tool) => this.set({ tool, eyedropper: false, pickingColor: false });
+  setMode = (mode: Mode) => { if (mode === 'edit' && !this.state.currentId) return; this.set({ mode, dialog: null }); };
+  /** Library: open a photo in the Edit view. */
+  openInEdit = async (id: string) => { await this.select(id); this.set({ mode: 'edit' }); };
+  setTool = (tool: Tool) => {
+    const entering = tool === 'crop' && this.state.tool !== 'crop';
+    const h = this.state.history;
+    this.set({ tool, eyedropper: false, pickingColor: false, straightenTool: false, ...(entering ? { cropEntryIndex: h ? h.index : null, cropTab: 'crop' as const } : {}) });
+  };
+  setCropTab = (cropTab: CropTab) => this.set({ cropTab, straightenTool: false });
+  setCropGuides = (cropGuides: CropGuides) => this.set({ cropGuides });
+  setConstrainCrop = (constrainCrop: boolean) => this.set({ constrainCrop });
+  toggleStraightenTool = () => this.set({ straightenTool: !this.state.straightenTool });
+  /** Cancel in the Crop & Geometry tool: rewind to how the photo was when the tool was opened, then leave. */
+  cancelCrop = () => {
+    const h = this.h(), idx = this.state.cropEntryIndex;
+    if (h && idx !== null && idx < h.entries.length) this.setHistory(jumpTo(h, idx));
+    this.set({ tool: 'edit', straightenTool: false });
+  };
+  /** Straighten tool: a line drawn on the displayed picture (overlay pixels) becomes level / plumb. */
+  straightenLine = (x1: number, y1: number, x2: number, y2: number) => {
+    const h = this.h();
+    if (!h) return;
+    const a = straightenFromLine(this.state.params.straighten, x1, y1, x2, y2);
+    this.set({ straightenTool: false });
+    if (a === null) return this.toast('That line is too short to straighten from. Draw a longer one along the horizon or an edge.');
+    this.setHistory(setParams(h, { straighten: a }, 'Straighten', this.ctx()));
+  };
 
   // ---------------------------------------------------------------- crop / geometry
   private applyParamsEdit(fn: (p: EditParams) => EditParams, label: string) { const h = this.h(); if (h) this.setHistory(applyEdit(h, fn, label)); }
@@ -717,6 +758,27 @@ export class EditorStore {
     if (next) void this.select(next);
   };
 
+
+  // ---------------------------------------------------------------- snapshots (named copies of all edits, per photo)
+  addSnapshot = (name?: string) => {
+    const id = this.state.currentId, p = this.state.photos.find((x) => x.id === id);
+    if (!id || !p) return;
+    const n = name?.trim() || `Snapshot ${p.info.snapshots.length + 1}`;
+    this.patchInfo(id, { snapshots: [...p.info.snapshots, { id: crypto.randomUUID(), name: n, time: Date.now(), params: JSON.parse(JSON.stringify(this.state.params)) }] });
+  };
+  applySnapshot = (sid: string) => {
+    const snap = this.state.photos.find((x) => x.id === this.state.currentId)?.info.snapshots.find((x) => x.id === sid);
+    if (snap) this.applyParamsEdit(() => normalizeParams(JSON.parse(JSON.stringify(snap.params))), `Snapshot: ${snap.name}`);
+  };
+  renameSnapshot = (sid: string, name: string) => {
+    const id = this.state.currentId, p = this.state.photos.find((x) => x.id === id);
+    if (id && p && name.trim()) this.patchInfo(id, { snapshots: p.info.snapshots.map((s) => (s.id === sid ? { ...s, name: name.trim() } : s)) });
+  };
+  deleteSnapshot = (sid: string) => {
+    const id = this.state.currentId, p = this.state.photos.find((x) => x.id === id);
+    if (id && p) this.patchInfo(id, { snapshots: p.info.snapshots.filter((s) => s.id !== sid) });
+  };
+
   // ---------------------------------------------------------------- batch edits on any photo (open or not)
   private async historyFor(id: string): Promise<EditHistory> {
     let h = this.histories.get(id);
@@ -827,7 +889,7 @@ export class EditorStore {
         const params = present(await this.historyFor(ids[i]));
         this.set({ exportStatus: { done: i, total: ids.length, stage: 'Starting', name: rec.name } });
         const native = resolveSize(outputSize(params, rec.width, rec.height), settings.resize);
-        const res = await runExport({ original: rec.original, name: rec.name, type: rec.type, params, settings }, (stage) => this.set({ exportStatus: { done: i, total: ids.length, stage, name: rec.name } }));
+        const res = await runExport({ original: rec.original, name: rec.name, type: rec.type, params, settings, fullWidth: rec.width }, (stage) => this.set({ exportStatus: { done: i, total: ids.length, stage, name: rec.name } }));
         where.add(res.ranIn);
         res.notes.forEach((n) => notes.add(n));
         size = `${res.width} × ${res.height}`;

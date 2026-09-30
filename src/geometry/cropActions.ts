@@ -69,3 +69,17 @@ export function resetCropTool(p: EditParams): EditParams {
 }
 
 export const geometryOf = geoOf;
+
+/**
+ * "Straighten tool": the user draws a line along something that should be level (or plumb) on the
+ * DISPLAYED picture. A rotation of +s degrees turns the picture clockwise on screen (y down), so a
+ * line at screen angle θ is levelled by adding −θ to the current angle. Lines closer to vertical
+ * than horizontal are made vertical (θ folded by 90°). Returns null for a line too short to trust.
+ */
+export function straightenFromLine(current: number, x1: number, y1: number, x2: number, y2: number, minLength = 8): number | null {
+  const dx = x2 - x1, dy = y2 - y1;
+  if (Math.hypot(dx, dy) < minLength) return null;
+  const theta = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const folded = theta - 90 * Math.round(theta / 90);
+  return Math.round(Math.min(45, Math.max(-45, current - folded)) * 100) / 100;
+}

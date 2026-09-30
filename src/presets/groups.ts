@@ -5,7 +5,7 @@
  */
 import { SLIDERS, type ParamKey, type SectionId } from '../image-engine/params';
 
-export type GroupId = 'wb' | 'tone' | 'presence' | 'color' | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'lens' | 'geometry' | 'crop' | 'masks' | 'spots';
+export type GroupId = 'wb' | 'tone' | 'presence' | 'color' | 'curve' | 'mixer' | 'detail' | 'grading' | 'vignette' | 'grain' | 'lens' | 'geometry' | 'crop' | 'masks' | 'spots';
 export type NonScalar = 'curves' | 'lensProfile' | 'crop' | 'masks' | 'spots';
 
 export interface CopyGroup {
@@ -25,9 +25,10 @@ export const COPY_GROUPS: CopyGroup[] = [
   { id: 'tone', label: 'Tone', keys: keysOf('tone'), nonScalar: [], defaultOn: true },
   { id: 'presence', label: 'Texture, clarity, dehaze', keys: keysOf('presence'), nonScalar: [], defaultOn: true },
   { id: 'color', label: 'Vibrance & saturation', keys: keysOf('color'), nonScalar: [], defaultOn: true },
-  { id: 'curve', label: 'Tone curve', keys: [], nonScalar: ['curves'], defaultOn: true },
+  { id: 'curve', label: 'Tone curve (point + parametric)', keys: keysOf('curve'), nonScalar: ['curves'], defaultOn: true },
   { id: 'mixer', label: 'Color mixer', keys: keysOf('mixer'), nonScalar: [], defaultOn: true },
   { id: 'grading', label: 'Color grading', keys: keysOf('grading'), nonScalar: [], defaultOn: true },
+  { id: 'detail', label: 'Detail (sharpening, noise reduction)', keys: keysOf('detail'), nonScalar: [], defaultOn: true },
   { id: 'vignette', label: 'Vignette', keys: keysOf('vignette'), nonScalar: [], defaultOn: true },
   { id: 'grain', label: 'Grain', keys: keysOf('grain'), nonScalar: [], defaultOn: true },
   { id: 'lens', label: 'Lens corrections', keys: keysOf('lens'), nonScalar: ['lensProfile'], defaultOn: true },

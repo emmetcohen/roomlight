@@ -135,7 +135,7 @@ describe('crop tool logic', () => {
     expect(r('3:2')).toBeCloseTo(1.5); expect(r('3:2', true)).toBeCloseTo(2 / 3);
     expect(r('4:3')).toBeCloseTo(4 / 3); expect(r('16:9')).toBeCloseTo(16 / 9);
     expect(r('custom', false, 7, 5)).toBeCloseTo(1.4);
-    expect(ASPECT_PRESETS.map((a) => a.id)).toEqual(['free', 'original', '1:1', '4:5', '3:2', '4:3', '16:9', 'custom']);
+    expect(ASPECT_PRESETS.map((a) => a.id)).toEqual(['original', 'custom', 'free', '1:1', '4:5', '5:7', '2:3', '3:4', '16:9', '3:2', '4:3']);
   });
 
   it('fitRatio returns the largest centred rectangle of the ratio inside the crop', () => {
@@ -431,5 +431,46 @@ describe('crop actions (what the Crop tool does)', () => {
     expect(present(h).orientation).toBe(0); expect(present(h).straighten).toBe(0);
     h = previewParam(createHistory(DEFAULT_PARAMS), 'geoScale', 60, { aspect: 1.5 });
     expect(present(h).crop.w).toBeLessThan(1); // zooming out exposes empty canvas, so the crop follows
+  });
+});
+
+import { straightenFromLine } from '../src/geometry/cropActions';
+
+describe('straighten tool (draw a line)', () => {
+  /** Screen angle (degrees, CW positive) of the line p→q after the geometry matrix for straighten `s`. */
+  const angleAfter = (s: number, phi: number) => {
+    const M = geoMatrix({ ...DEFAULT_GEO, straighten: s }, 600, 400);
+    const a = project(M, 0, 0)!, b = project(M, 100 * Math.cos((phi * Math.PI) / 180), 100 * Math.sin((phi * Math.PI) / 180))!;
+    return (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+  };
+  it('the angle it returns really makes the drawn line level under the real transform', () => {
+    for (const phi of [7, -12.5, 30, -44, 0.4]) {
+      const cur = 0; // picture as displayed now: line sits at phi
+      const dx = Math.cos((phi * Math.PI) / 180) * 200, dy = Math.sin((phi * Math.PI) / 180) * 200;
+      const s = straightenFromLine(cur, 10, 10, 10 + dx, 10 + dy)!;
+      expect(Math.abs(angleAfter(s, phi))).toBeLessThan(0.05);
+    }
+  });
+  it('accounts for the angle already applied, and for lines drawn right-to-left', () => {
+    const s0 = 3, phi = 5 + s0; // the line's angle on the displayed (already straightened) picture
+    const dx = Math.cos((phi * Math.PI) / 180) * 150, dy = Math.sin((phi * Math.PI) / 180) * 150;
+    expect(straightenFromLine(s0, 300, 300, 300 - dx, 300 - dy)).toBeCloseTo(-5, 1); // total angle that levels the ORIGINAL line
+  });
+  it('near-vertical lines are made plumb; too-short lines and huge tilts are handled', () => {
+    expect(Math.abs(straightenFromLine(0, 10, 10, 13, 210)! - (-((Math.atan2(200, 3) * 180) / Math.PI - 90)))).toBeLessThan(0.02);
+    expect(straightenFromLine(0, 5, 5, 8, 6)).toBeNull();
+    expect(Math.abs(straightenFromLine(40, 0, 0, 100, -100)!)).toBeLessThanOrEqual(45);
+  });
+});
+
+describe('aspect presets', () => {
+  it('offers the Lightroom-style list and keeps the older presets', () => {
+    const ids = ASPECT_PRESETS.map((a) => a.id);
+    for (const id of ['original', 'custom', 'free', '1:1', '4:5', '5:7', '2:3', '3:4', '16:9', '3:2', '4:3']) expect(ids).toContain(id);
+  });
+  it('portrait presets are portrait by default and flip with orientation', () => {
+    const r = (aspect: '5:7' | '2:3' | '3:4' | '3:2', portrait = false) => presetRatio({ aspect, customW: 1, customH: 1, portrait }, 1.5)!;
+    expect(r('5:7')).toBeCloseTo(5 / 7); expect(r('2:3')).toBeCloseTo(2 / 3); expect(r('3:4')).toBeCloseTo(3 / 4); expect(r('3:2')).toBeCloseTo(1.5);
+    expect(r('5:7', true)).toBeCloseTo(7 / 5); expect(r('3:2', true)).toBeCloseTo(2 / 3);
   });
 });

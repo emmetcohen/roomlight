@@ -45,6 +45,22 @@ interface BaseScalars {
   // Colour grading global controls
   gradeBlending: number;
   gradeBalance: number;
+  // Parametric tone curve (region sliders; combined with the point curve)
+  curveHighlights: number;
+  curveLights: number;
+  curveDarks: number;
+  curveShadows: number;
+  // Detail: input sharpening, noise reduction
+  sharpAmount: number;
+  sharpRadius: number;
+  sharpDetail: number;
+  sharpMasking: number;
+  nrLuma: number;
+  nrLumaDetail: number;
+  nrLumaContrast: number;
+  nrColor: number;
+  nrColorDetail: number;
+  nrColorSmooth: number;
   // Vignette
   vignetteAmount: number;
   vignetteMidpoint: number;
@@ -91,7 +107,7 @@ export interface EditParams extends ScalarParams {
 
 export type SectionId =
   | 'whiteBalance' | 'tone' | 'presence' | 'color'
-  | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'crop' | 'geometry' | 'lens' | 'retouch';
+  | 'curve' | 'detail' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'crop' | 'geometry' | 'lens' | 'retouch';
 
 export interface SliderDef {
   key: ParamKey;
@@ -118,6 +134,7 @@ export const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'color', label: 'Color' },
   { id: 'curve', label: 'Tone Curve' },
   { id: 'mixer', label: 'Color Mixer' },
+  { id: 'detail', label: 'Detail' },
   { id: 'grading', label: 'Color Grading' },
   { id: 'vignette', label: 'Vignette' },
   { id: 'grain', label: 'Grain' },
@@ -181,6 +198,22 @@ export const SLIDERS: SliderDef[] = [
   ...gradingSliders(),
   s('gradeBlending', 'Blending', 'grading', 0, 100, 50, { signed: false, full: 'Grading Blending' }),
   s('gradeBalance', 'Balance', 'grading', -100, 100, 0, { full: 'Grading Balance' }),
+
+  s('curveHighlights', 'Highlights', 'curve', -100, 100, 0, { full: 'Curve Highlights' }),
+  s('curveLights', 'Lights', 'curve', -100, 100, 0, { full: 'Curve Lights' }),
+  s('curveDarks', 'Darks', 'curve', -100, 100, 0, { full: 'Curve Darks' }),
+  s('curveShadows', 'Shadows', 'curve', -100, 100, 0, { full: 'Curve Shadows' }),
+
+  s('sharpAmount', 'Amount', 'detail', 0, 150, 0, { signed: false, full: 'Sharpening Amount' }),
+  s('sharpRadius', 'Radius', 'detail', 0.5, 3, 1, { step: 0.1, decimals: 1, signed: false, full: 'Sharpening Radius' }),
+  s('sharpDetail', 'Detail', 'detail', 0, 100, 25, { signed: false, full: 'Sharpening Detail' }),
+  s('sharpMasking', 'Masking', 'detail', 0, 100, 0, { signed: false, full: 'Sharpening Masking' }),
+  s('nrLuma', 'Luminance', 'detail', 0, 100, 0, { signed: false, full: 'Noise Luminance' }),
+  s('nrLumaDetail', 'Detail', 'detail', 0, 100, 50, { signed: false, full: 'Noise Luminance Detail' }),
+  s('nrLumaContrast', 'Contrast', 'detail', 0, 100, 0, { signed: false, full: 'Noise Luminance Contrast' }),
+  s('nrColor', 'Color', 'detail', 0, 100, 0, { signed: false, full: 'Noise Color' }),
+  s('nrColorDetail', 'Detail', 'detail', 0, 100, 50, { signed: false, full: 'Noise Color Detail' }),
+  s('nrColorSmooth', 'Smoothness', 'detail', 0, 100, 50, { signed: false, full: 'Noise Color Smoothness' }),
 
   s('vignetteAmount', 'Amount', 'vignette', -100, 100, 0, { full: 'Vignette Amount' }),
   s('vignetteMidpoint', 'Midpoint', 'vignette', 0, 100, 50, { signed: false, full: 'Vignette Midpoint' }),

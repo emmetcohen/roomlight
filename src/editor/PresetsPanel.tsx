@@ -18,7 +18,7 @@ export function PresetsPanel() {
   };
   const targets = store.targets();
   return (
-    <Panel title="Presets" defaultOpen={false}>
+    <Panel title="Presets">
       <p className="note" style={{ marginTop: 0 }}>{targets.length > 1 ? `Applies to the ${targets.length} selected photos.` : 'Applies to the open photo.'} Each preset changes only the settings it contains, as one undoable step.</p>
       {groups.map((g) => (
         <div key={g} className="preset-group">

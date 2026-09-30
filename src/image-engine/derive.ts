@@ -4,7 +4,7 @@
  * Both the CPU reference and the GPU uniform upload read from this one structure, so the two
  * cannot drift apart in how they interpret a slider.
  */
-import { curvesAreIdentity, buildLut, LUT_SIZE } from './curves';
+import { curvesAreIdentity, buildLut, parametricIsIdentity, LUT_SIZE, type Parametric } from './curves';
 import type { GradeTables, GrainTables, LocalTables, MixerTables, VignetteTables } from './adjustments';
 import { GRADE_CHROMA, GRADE_LUM_GAIN } from './adjustments';
 import { contrastShape, exposureGain, wbMultipliers } from './model';
@@ -70,10 +70,15 @@ export interface Derived {
   grain: GrainTables;
 }
 
-const lutCache = new WeakMap<object, Float32Array>();
+export const parametricOf = (p: EditParams): Parametric => ({ shadows: p.curveShadows / 100, darks: p.curveDarks / 100, lights: p.curveLights / 100, highlights: p.curveHighlights / 100 });
+
+const lutCache = new WeakMap<object, Map<string, Float32Array>>();
 export function lutFor(p: EditParams): Float32Array {
-  let l = lutCache.get(p.curves);
-  if (!l) { l = buildLut(p.curves); lutCache.set(p.curves, l); }
+  const par = parametricOf(p), key = `${par.shadows},${par.darks},${par.lights},${par.highlights}`;
+  let byPar = lutCache.get(p.curves);
+  if (!byPar) { byPar = new Map(); lutCache.set(p.curves, byPar); }
+  let l = byPar.get(key);
+  if (!l) { l = buildLut(p.curves, par); byPar.set(key, l); if (byPar.size > 64) byPar.delete(byPar.keys().next().value!); }
   return l;
 }
 
@@ -119,7 +124,7 @@ export function derive(p: EditParams, w: number, h: number, src: { w: number; h:
     exposure: p.exposure !== 0,
     tone: p.contrast !== 0 || p.highlights !== 0 || p.shadows !== 0 || p.whites !== 0 || p.blacks !== 0,
     local: local.texture !== 0 || local.clarity !== 0 || local.dehaze !== 0 || masks.a3.some((a) => a[2] === 1),
-    curve: !curvesAreIdentity(p.curves),
+    curve: !curvesAreIdentity(p.curves) || !parametricIsIdentity(parametricOf(p)),
     mixer: [...mixer.hue, ...mixer.sat, ...mixer.lum].some((v) => v !== 0),
     grading: GRADE_RANGES.some((r) => p[`grade_${r}_sat`] !== 0 || p[`grade_${r}_lum`] !== 0),
     color: p.saturation !== 0 || p.vibrance !== 0,

@@ -2,10 +2,11 @@
  * Crop rectangle (normalised, in canvas space) + aspect presets + pure drag logic.
  * The crop is just four numbers: the original pixels are never touched.
  */
-export type AspectPreset = 'free' | 'original' | '1:1' | '4:5' | '3:2' | '4:3' | '16:9' | 'custom';
+export type AspectPreset = 'free' | 'original' | '1:1' | '4:5' | '5:7' | '2:3' | '3:4' | '3:2' | '4:3' | '16:9' | 'custom';
 export const ASPECT_PRESETS: { id: AspectPreset; label: string }[] = [
-  { id: 'free', label: 'Free' }, { id: 'original', label: 'Original' }, { id: '1:1', label: '1 : 1' }, { id: '4:5', label: '4 : 5' },
-  { id: '3:2', label: '3 : 2' }, { id: '4:3', label: '4 : 3' }, { id: '16:9', label: '16 : 9' }, { id: 'custom', label: 'Custom' },
+  { id: 'original', label: 'Original' }, { id: 'custom', label: 'Custom' }, { id: 'free', label: 'Free' },
+  { id: '1:1', label: '1 : 1' }, { id: '4:5', label: '4 : 5' }, { id: '5:7', label: '5 : 7' }, { id: '2:3', label: '2 : 3' }, { id: '3:4', label: '3 : 4' },
+  { id: '16:9', label: '16 : 9' }, { id: '3:2', label: '3 : 2' }, { id: '4:3', label: '4 : 3' },
 ];
 
 export interface Crop {
@@ -42,13 +43,16 @@ export function presetRatio(c: Pick<Crop, 'aspect' | 'customW' | 'customH' | 'po
     case 'original': return canvasAspect; // orientation swap is meaningless here
     case '1:1': return 1;
     case '4:5': r = 4 / 5; break;
+    case '5:7': r = 5 / 7; break;
+    case '2:3': r = 2 / 3; break;
+    case '3:4': r = 3 / 4; break;
     case '3:2': r = 3 / 2; break;
     case '4:3': r = 4 / 3; break;
     case '16:9': r = 16 / 9; break;
     case 'custom': r = c.customW / c.customH; break;
   }
-  // Presets are quoted as landscape except 4:5, which is conventionally portrait; `portrait` flips the orientation.
-  if (c.aspect === '4:5') return c.portrait ? 5 / 4 : 4 / 5;
+  // Presets are quoted as landscape except the portrait ones (4:5, 5:7, 2:3, 3:4); `portrait` flips the orientation.
+  if (c.aspect === '4:5' || c.aspect === '5:7' || c.aspect === '2:3' || c.aspect === '3:4') return c.portrait ? 1 / r : r;
   return c.portrait ? 1 / r : r;
 }
 

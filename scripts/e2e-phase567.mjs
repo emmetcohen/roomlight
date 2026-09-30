@@ -65,7 +65,6 @@ try {
   await importPhoto('blemish.jpg', 0);
   check('blemish is visible in the untouched photo', dark(await pixelAt(0.5, 0.5)), JSON.stringify(await pixelAt(0.5, 0.5)));
 
-  await page.locator('[data-left-tab=history]').click();
   await page.keyboard.press('q');
   check('Q opens the Retouch tool', (await page.locator('[data-tool=retouch].on').count()) === 1);
   await page.locator('[data-spot-kind=remove]').click();
@@ -111,8 +110,8 @@ try {
   check('three photos in the filmstrip', (await page.locator('.thumb').count()) === 4);
 
   // Info + EXIF
+  await page.locator('[data-mode=library]').click(); await page.waitForTimeout(300); // photo info lives in the Library view
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(600);
-  await page.locator('[data-left-tab=info]').click();
   const exifText = await page.locator('[data-testid=exif-list]').innerText();
   check('EXIF is read from the file and shown (camera, lens, exposure, location)', /ACME Model One/.test(exifText) && /35mm F1\.8/.test(exifText) && /1\/250 s/.test(exifText) && /f\/1\.8/.test(exifText) && /ISO 400/.test(exifText) && /48\.85840/.test(exifText), exifText.replace(/\s+/g, ' ').slice(0, 160));
   await page.locator('[data-photo]').nth(2).click(); await page.waitForTimeout(600);
@@ -131,7 +130,6 @@ try {
   check('X rejects a photo', (await page.locator('[data-photo]').nth(2).getAttribute('data-flag')) === 'reject');
 
   // Filters
-  await page.locator('[data-left-tab=library]').click();
   await page.locator('[data-min-rating="4"]').click();
   check('rating filter shows only photos rated ≥ 4', (await page.locator('[data-photo]').count()) === 1 && /1 of 4/.test(await page.locator('[data-testid=photo-count]').innerText()));
   await page.getByRole('button', { name: 'Clear filter' }).first().click();
@@ -148,11 +146,9 @@ try {
 
   // Metadata editing (keywords are searchable)
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(400);
-  await page.locator('[data-left-tab=info]').click();
   await page.locator('input[aria-label=Keywords]').fill('harbour, Sunset, harbour'); await page.locator('input[aria-label=Keywords]').press('Enter');
   await page.locator('input[aria-label=Title]').fill('Evening at the harbour'); await page.locator('input[aria-label=Title]').press('Enter');
   check('keywords are de-duplicated', (await page.locator('input[aria-label=Keywords]').inputValue()) === 'harbour, Sunset');
-  await page.locator('[data-left-tab=library]').click();
   await page.locator('input[aria-label="Search photos"]').fill('sunset harbour');
   check('keywords and title are searchable', (await page.locator('[data-photo]').count()) === 1);
   await page.locator('input[aria-label="Search photos"]').fill('');
@@ -165,11 +161,10 @@ try {
   await page.locator('.album-list li').first().locator('button').first().click();
   check('All photos shows everything again', (await page.locator('[data-photo]').count()) === 4);
 
-  // Presets
+  // Presets (Edit view, left column)
+  await page.locator('[data-mode=edit]').click(); await page.waitForTimeout(400);
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(700);
-  await page.locator('[data-left-tab=history]').click();
   const beforePreset = await pixelAt(0.17, 0.78);
-  await page.locator('.panel-toggle:has-text("Presets")').click();
   await page.locator('[data-preset="Neutral"] button').click(); await page.waitForTimeout(400);
   const bw = await pixelAt(0.17, 0.78);
   check('the Black & White preset removes colour from the picture', Math.abs(bw[0] - bw[1]) < 4 && Math.abs(bw[1] - bw[2]) < 4 && (Math.max(...beforePreset) - Math.min(...beforePreset) > 40), `${beforePreset} -> ${bw}`);
@@ -186,7 +181,6 @@ try {
   check('Auto tone is a normal, undoable edit', (await page.locator('.history-list li').first().innerText()).startsWith('Auto Tone'));
 
   // Save a user preset, apply it to two selected photos at once
-  await page.locator('[data-left-tab=history]').click();
   await page.locator('[data-param=vignetteAmount]').scrollIntoViewIfNeeded().catch(() => {});
   await page.locator('[data-photo]').nth(3).click();
   await page.getByRole('button', { name: 'Save current as preset…' }).click();
@@ -218,9 +212,10 @@ try {
   // Persistence across a reload
   await page.waitForTimeout(800);
   await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(1000);
+  await page.locator('[data-mode=library]').click(); await page.waitForTimeout(300);
   check('ratings, flags and albums survive a reload', (await page.locator('[data-photo]').nth(1).getAttribute('data-rating')) === '4' && (await page.locator('[data-photo]').nth(1).getAttribute('data-flag')) === 'pick' && (await page.locator('[data-album]').count()) === 1);
+  await page.locator('[data-mode=edit]').click(); await page.waitForTimeout(300);
   check('user presets survive a reload', (await page.locator('.panel-toggle:has-text("Presets")').count()) === 1);
-  await page.locator('.panel-toggle:has-text("Presets")').click();
   check('the saved preset is still listed', (await page.locator('[data-preset="My Dark Fix"]').count()) === 1);
   await page.screenshot({ path: 'scripts/.out/library.png' });
 
@@ -249,7 +244,7 @@ try {
 
   // --- a single JPEG at full size, EXIF kept, location removed (the defaults)
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(700); await blur();
-  await page.getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(400); // clean baseline after the Phase 6 edits
+  await page.locator('[data-testid=reset-all]').click(); await page.waitForTimeout(400); // clean baseline after the Phase 6 edits
   await openExport();
   check('export dialog shows the output size', /1200 × 800 px/.test(await page.locator('[data-testid=export-size]').innerText()));
   check('it warns that this photo carries location data', (await page.locator('.gps-flag').count()) === 1);
@@ -299,11 +294,8 @@ try {
 
   // --- edits are baked in: Black & White preset -> exported pixels have no colour
   await closeExport();
-  await page.locator('[data-left-tab=history]').click();
   const colorBlock = async (b) => decodedPixel(b, 'image/jpeg', 200, 620);
   await openExport(); r = await doExport(); const plain = await colorBlock(r.bytes); await closeExport();
-  await page.locator('.panel-toggle:has-text("Presets")').click().catch(() => {});
-  if (!(await page.locator('[data-preset="Neutral"]').isVisible().catch(() => false))) await page.locator('.panel-toggle:has-text("Presets")').click();
   await page.locator('[data-preset="Neutral"] button').click(); await page.waitForTimeout(500);
   await openExport(); r = await doExport(); const mono = await colorBlock(r.bytes); await closeExport();
   check('edits are applied to the exported pixels (B&W preset removes colour)', Math.max(...plain) - Math.min(...plain) > 40 && Math.max(...mono) - Math.min(...mono) < 6, `${plain} -> ${mono}`);
@@ -406,14 +398,14 @@ try {
   await page.locator('[data-param=clarity] .slider-number').fill('70'); await page.locator('[data-param=clarity] .slider-number').press('Enter'); await page.waitForTimeout(500);
   await page.locator('[data-param=dehaze] .slider-number').fill('40'); await page.locator('[data-param=dehaze] .slider-number').press('Enter'); await page.waitForTimeout(500);
   const withLocal = await pixelAt(0.3, 0.3);
-  await page.getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(500);
+  await page.locator('[data-testid=reset-all]').click(); await page.waitForTimeout(500);
   const noLocal = await pixelAt(0.3, 0.3);
   check('clarity + dehaze render in a zoomed window and change the picture', Math.hypot(withLocal[0] - noLocal[0], withLocal[1] - noLocal[1], withLocal[2] - noLocal[2]) > 4, `${noLocal} -> ${withLocal}`);
   await page.locator('[data-zoom-btn="fit"]').click(); await page.waitForTimeout(300);
 
   // tools keep working while zoomed: retouch click lands where the pointer is
   await page.locator('[data-photo]').first().click(); await page.waitForTimeout(900); await blur();
-  await page.getByRole('button', { name: 'Reset All' }).click().catch(() => {}); await page.waitForTimeout(300);
+  await page.locator('[data-testid=reset-all]').click({ timeout: 2000 }).catch(() => {}); await page.waitForTimeout(300);
   await page.locator('[data-zoom-btn="200"]').click(); await page.waitForTimeout(600);
   check('the blemish is still there, now at twice the size', dark(await pixelAt(0.5, 0.5)));
   await page.keyboard.press('q'); await page.locator('[data-spot-kind=remove]').click(); await page.locator('[data-retouch=size] .slider-number').fill('40'); await page.locator('[data-retouch=size] .slider-number').press('Enter'); await blur();

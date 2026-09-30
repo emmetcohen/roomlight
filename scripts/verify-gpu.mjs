@@ -24,6 +24,8 @@ const cases = [
   // tone curve
   { curves: { rgb: curveS } },
   { curves: { r: [{ x: 0, y: 0.1 }, { x: 0.6, y: 0.8 }, { x: 1, y: 1 }], b: [{ x: 0.1, y: 0 }, { x: 0.5, y: 0.4 }, { x: 1, y: 0.9 }] } },
+  // parametric curve (feeds the same lookup table) and combined with a point curve
+  { curveHighlights: 80 }, { curveShadows: -70, curveDarks: 40 }, { curveLights: 100, curveHighlights: -60, curveShadows: 50, curves: { rgb: curveS } },
   // colour mixer
   { mix_red_hue: 60, mix_red_sat: 50 }, { mix_blue_sat: -80, mix_blue_lum: 40 }, { mix_green_hue: -70, mix_yellow_lum: -50, mix_magenta_sat: 60, mix_orange_hue: 40 },
   // colour grading

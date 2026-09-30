@@ -313,6 +313,40 @@ before** geometry and every tonal adjustment — a derived cache (`retouchedPixe
   a zoomed window takes them from a whole-picture render of ≤3072 px (cached until the edit changes), which is exact for exports (no window) and an approximation at very high zoom.
   Above the preview's resolution the original is decoded at full size (capped by the GPU's texture limit) and released again when zoom returns to Fit.
 
+## Detail: input sharpening and noise reduction (`src/image-engine/detail.ts`)
+A **pre-pass over the source pixels** — after retouch spots, before geometry and every tonal adjustment — exactly where raw converters put it. Pure and deterministic; the
+input is never modified; preview, 1:1 view and export all call the same function (`applyAllDetail`), so they agree. The viewer runs it in a Web Worker (latest request wins, so dragging a
+slider never builds a backlog) and keeps showing the newest finished result; export runs it inline in the export worker. Radii are in pixels of the ORIGINAL photo (`scale` = pixels here ÷ original
+pixels), so a scaled preview looks like the full-size result. Working space: encoded sRGB → `Y = 0.2126R + 0.7152G + 0.0722B`, `Cb = (B−Y)/1.8556`, `Cr = (R−Y)/1.5748`.
+
+* **Luminance NR** (`nrLuma`, `nrLumaDetail`, `nrLumaContrast`): edge-preserving *guided filter* (He, Sun, Tang 2010; O(N) box means). `GF(I,p)`: `a = cov(I,p)/(var(I)+ε)`, `b = mean(p) − a·mean(I)`,
+  `q = mean(a)·I + mean(b)`. `Y_s = GF(Y,Y)` with `ε = σ²`, `σ = 25·Luminance/100` levels, radius `max(1, round((1 + 2·L)·scale))`. **Detail** puts back what was removed: `Y₁ = Y_s + ρ(Y − Y_s)`, `ρ = 0.6·(Detail/100)²`.
+  **Contrast** restores local contrast of the smoothed picture: `Y₂ = Y₁ + 0.6·C·(Y_s − box₄(Y_s))`.
+* **Colour NR** (`nrColor`, `nrColorDetail`, `nrColorSmooth`): Cb, Cr are filtered at half resolution by a *three-channel* guided filter whose guide is (Y, Cb, Cr) (chroma lightly pre-blurred so its own noise is not taken for an edge), so colour
+  never crosses a brightness **or** colour edge (a luma-only guide let colour bleed across equal-brightness colour edges — caught by a test). `ε = (4 + 36·(1 − Detail/100))²`, radius from Smoothness; `C' = C + (Color/100)(C_s − C)`.
+* **Sharpening** (`sharpAmount` 0–150, `sharpRadius` 0.5–3 px, `sharpDetail`, `sharpMasking`): unsharp mask on luma, `D = Y − G_σ*Y`, `σ = max(0.4, Radius·scale)` (Gaussian = three box blurs). **Detail** is halo suppression:
+  `g = D_soft + (D − D_soft)·Detail/100`, `D_soft = D/(1 + |D|/12)` (low Detail limits overshoot at strong edges). **Masking** confines it to edges: `w = smoothstep(0.3t, t, |∇Y|)`, `t = 30·Masking/100`, smoothed 3×3.
+  `Y' = Y + (Amount/100)·w·g`. Colour is untouched (luma only).
+* **Per-mask Sharpness (−100…100) and Noise (0…100)** blend toward a fixed sharpened / denoised copy of the image by each mask's value (negative Sharpness softens). Range masks look at the pre-pass pixel rather than the untouched original.
+* Cost: about 0.4–1.3 s for a 4.4 MP preview (all of it in the worker); a mask with Detail adjustments about 3 s.
+
+## Parametric curve (`curveHighlights/Lights/Darks/Shadows`)
+Four region sliders (±100) raise or lower the tones around x = 7/8, 5/8, 3/8, 1/8: each region is a cos² bump of half-width ¼ (the four add up to 1), displacement `0.07·4x(1−x)·Σ aₖ·bump_k(x)`,
+pinned to zero at black and white, and monotone for every slider combination (tested over 400 random combinations and the worst corner). It is applied *before* the point curve (`out = pointCurve(parametric(x))`) and feeds the
+same 1024-entry lookup table the GPU reads, so GPU/CPU parity is unaffected (parity cases added).
+
+## Screen layout (the mental model)
+```
+LIBRARY = manage photos        (photo grid, filters, albums, search, info)
+EDIT    = global adjustments   (Basic, Curve, Color Mixer, Color Grading, Detail, Optics, Effects)
+CROP & GEOMETRY = composition, orientation, perspective (tabs: Crop | Geometry)
+HEALING / REMOVE = repair parts of the image
+MASKING = local adjustments to selected areas
+```
+Top bar: Library | Edit switch (the only navigation), filename, Undo / Redo / Before-After / Export. Edit view: left = Presets, History, Snapshots; centre = photo + image toolbar (Fit, Fill, 100 %, 200 %,
+Auto, B&W, Reset, Copy, Paste); right = histogram above the active tool's panels, with a thin vertical tool strip on the far right edge; bottom = filmstrip. The Crop tab shows the whole rotated canvas with the crop
+rectangle; the Geometry tab (and every other tool) shows the result. **Cancel** in Crop & Geometry rewinds the history to where the tool was opened. **Constrain Crop** (Geometry tab) decides whether geometry edits shrink the crop.
+
 ## Import
 `src/import/decoders.ts` is a decoder registry. Only the browser decoder (JPEG/PNG/WebP/…) is
 installed. RAW, HEIC and TIFF files are **rejected with an explicit message**, never treated as

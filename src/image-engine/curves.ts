@@ -96,11 +96,32 @@ export function makeCurve(pts: CurvePoint[]): (x: number) => number {
 export const evalCurve = (pts: CurvePoint[], x: number) => makeCurve(pts)(x);
 
 /**
+ * Parametric curve: four region sliders (each −1…1) that raise or lower the tones around
+ * x = 1/8 (shadows), 3/8 (darks), 5/8 (lights), 7/8 (highlights). Each region is a cos² bump of
+ * half-width 1/4 (the four bumps add up to 1), and the displacement is pinned to zero at black and
+ * white by a factor 4x(1−x):
+ *     y(x) = x + 0.07 · 4x(1−x) · Σ_k a_k · cos²( (π/2)·|x − c_k| / 0.25 )   for |x − c_k| < 0.25.
+ * The gain keeps the curve monotone for any slider combination (tested). It is applied BEFORE the
+ * point curve: out = pointCurve(parametric(x)).
+ */
+export interface Parametric { shadows: number; darks: number; lights: number; highlights: number }
+export const NO_PARAMETRIC: Parametric = { shadows: 0, darks: 0, lights: 0, highlights: 0 };
+export const PARAMETRIC_GAIN = 0.07;
+export const parametricIsIdentity = (p: Parametric) => p.shadows === 0 && p.darks === 0 && p.lights === 0 && p.highlights === 0;
+export function parametricCurve(x: number, p: Parametric): number {
+  const t = clamp01(x);
+  const bump = (c: number) => { const d = Math.abs(t - c) / 0.25; return d >= 1 ? 0 : Math.cos((d * Math.PI) / 2) ** 2; };
+  const d = p.shadows * bump(0.125) + p.darks * bump(0.375) + p.lights * bump(0.625) + p.highlights * bump(0.875);
+  return clamp01(t + PARAMETRIC_GAIN * 4 * t * (1 - t) * d);
+}
+
+/**
  * Compose the four curves into one RGB lookup table: out_c = curve_c(master(x)).
  * Layout: LUT_SIZE texels × RGBA (A unused = 1), ready to upload as an RGBA16F texture.
  */
-export function buildLut(curves: ToneCurves): Float32Array {
-  const master = makeCurve(curves.rgb), fr = makeCurve(curves.r), fg = makeCurve(curves.g), fb = makeCurve(curves.b);
+export function buildLut(curves: ToneCurves, par: Parametric = NO_PARAMETRIC): Float32Array {
+  const master0 = makeCurve(curves.rgb), master = parametricIsIdentity(par) ? master0 : (x: number) => master0(parametricCurve(x, par));
+  const fr = makeCurve(curves.r), fg = makeCurve(curves.g), fb = makeCurve(curves.b);
   const lut = new Float32Array(LUT_SIZE * 4);
   for (let i = 0; i < LUT_SIZE; i++) {
     const m = master(i / (LUT_SIZE - 1));

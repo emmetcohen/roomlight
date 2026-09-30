@@ -1,10 +1,14 @@
 /** Library data model (Phase 6): per-photo info, albums, filters. Independent of the edit parameters. */
+import { normalizeParams, type EditParams } from '../image-engine/params';
 import type { ExifInfo } from '../metadata/exif';
 
 export type Flag = 'none' | 'pick' | 'reject';
 export const COLOR_LABELS = ['red', 'yellow', 'green', 'blue', 'purple'] as const;
 export type ColorLabel = (typeof COLOR_LABELS)[number];
 export const LABEL_CSS: Record<ColorLabel, string> = { red: '#e5484d', yellow: '#e8c72f', green: '#3fb950', blue: '#3b82f6', purple: '#a06cf0' };
+
+/** A named copy of ALL of a photo's edit parameters (Snapshots panel). */
+export interface Snapshot { id: string; name: string; time: number; params: EditParams }
 
 /** Everything the user (or the file) says about a photo, apart from its pixels and its edits. Stored separately so the original record is never rewritten. */
 export interface PhotoInfo {
@@ -16,13 +20,14 @@ export interface PhotoInfo {
   caption: string;
   keywords: string[];
   albumIds: string[];
+  snapshots: Snapshot[];
   /** undefined = not read yet; null = read, none found. */
   exif?: ExifInfo | null;
 }
 
 export interface AlbumRecord { id: string; name: string; createdAt: number }
 
-export const defaultInfo = (photoId: string): PhotoInfo => ({ photoId, rating: 0, flag: 'none', label: null, title: '', caption: '', keywords: [], albumIds: [] });
+export const defaultInfo = (photoId: string): PhotoInfo => ({ photoId, rating: 0, flag: 'none', label: null, title: '', caption: '', keywords: [], albumIds: [], snapshots: [] });
 
 /** Validate untrusted stored info. */
 export function normalizeInfo(raw: Partial<PhotoInfo> | undefined | null, photoId: string): PhotoInfo {
@@ -38,6 +43,9 @@ export function normalizeInfo(raw: Partial<PhotoInfo> | undefined | null, photoI
     caption: typeof raw.caption === 'string' ? raw.caption : '',
     keywords: strs(raw.keywords),
     albumIds: strs(raw.albumIds),
+    snapshots: Array.isArray(raw.snapshots)
+      ? raw.snapshots.filter((x) => x && typeof x.id === 'string' && typeof x.name === 'string').slice(0, 50).map((x) => ({ id: x.id, name: x.name.slice(0, 80), time: typeof x.time === 'number' ? x.time : 0, params: normalizeParams(x.params as unknown as Record<string, unknown>) }))
+      : [],
     exif: raw.exif === undefined ? undefined : raw.exif,
   };
 }

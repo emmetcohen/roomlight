@@ -3,7 +3,7 @@ import { linearToSrgb } from '../color/colorSpace';
 import { SLIDER_BY_KEY } from '../image-engine/params';
 import { oklabToLinear } from '../image-engine/oklab';
 import { listSegmentationProviders } from '../masks/segmentation';
-import { MAX_MASKS, SHAPE_LABEL, type LocalKey, type Mask, type MaskComponent, type MaskOp, type Shape } from '../masks/types';
+import { LOCAL_EXTRA, MAX_MASKS, SHAPE_LABEL, type LocalKey, type Mask, type MaskComponent, type MaskOp, type Shape } from '../masks/types';
 import { Panel } from '../ui/Panel';
 import { SliderView } from '../ui/Slider';
 import { store, useEditor } from './store';
@@ -11,7 +11,8 @@ import { store, useEditor } from './store';
 const ADJUST_GROUPS: { title: string; keys: LocalKey[] }[] = [
   { title: 'Light', keys: ['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks'] },
   { title: 'Color', keys: ['temperature', 'tint', 'vibrance', 'saturation'] },
-  { title: 'Presence', keys: ['texture', 'clarity', 'dehaze'] },
+  { title: 'Effects', keys: ['texture', 'clarity', 'dehaze'] },
+  { title: 'Detail', keys: ['sharpness', 'noise'] },
 ];
 
 const CREATE: { type: Shape['type']; label: string; key: string }[] = [
@@ -23,7 +24,8 @@ const CREATE: { type: Shape['type']; label: string; key: string }[] = [
 ];
 
 function LocalSlider({ mask, k }: { mask: Mask; k: LocalKey }) {
-  const def = SLIDER_BY_KEY[k];
+  const extra = LOCAL_EXTRA[k];
+  const def = extra ? { label: extra.label, fullLabel: extra.label, min: extra.min, max: extra.max, step: 1, default: extra.default, decimals: 0, signed: extra.min < 0, track: undefined } : SLIDER_BY_KEY[k as keyof typeof SLIDER_BY_KEY];
   const label = `Adjust Mask ${def.label}`;
   return (
     <div data-local={k}>
@@ -73,6 +75,7 @@ function BrushControls() {
         <button className={brush.erase ? 'on' : ''} onClick={() => store.setBrush({ erase: true })}>Erase</button>
       </div>
       {one('Size', 'size', 1)}{one('Feather', 'feather')}{one('Flow', 'flow', 1)}{one('Density', 'density', 1)}
+      <label className="chk" title="Auto Mask (edge-aware painting) is not built yet"><input type="checkbox" disabled data-testid="auto-mask" />Auto Mask <span className="muted small">(not available)</span></label>
       <p className="note">Paint on the photo. Pen pressure changes size and flow when your device reports it.</p>
     </>
   );
@@ -196,7 +199,7 @@ function MaskDetails({ mask }: { mask: Mask }) {
       </Panel>
       {comp && <Panel title={`${SHAPE_LABEL[comp.shape.type]} settings`}><ComponentSettings mask={mask} comp={comp} /></Panel>}
       {ADJUST_GROUPS.map((g) => (
-        <Panel key={g.title} title={g.title} defaultOpen={g.title !== 'Presence'}>
+        <Panel key={g.title} title={g.title} defaultOpen={g.title !== 'Detail'}>
           {g.keys.map((k) => <LocalSlider key={k} mask={mask} k={k} />)}
         </Panel>
       ))}
@@ -225,6 +228,10 @@ export function MaskPanel() {
   const selected = useEditor((s) => s.selectedMask);
   const mask = masks.find((m) => m.id === selected);
   const haveProvider = listSegmentationProviders().length > 0;
+  const unavailable: { id: string; label: string; why: string }[] = [
+    { id: 'objects', label: 'Objects', why: 'Needs a segmentation model (none is installed)' },
+    { id: 'depth', label: 'Depth Range', why: 'Needs depth information (none is available for JPEG/PNG/WebP files)' },
+  ];
   const ai: { kind: 'subject' | 'sky' | 'background'; label: string }[] = [{ kind: 'subject', label: 'Subject' }, { kind: 'sky', label: 'Sky' }, { kind: 'background', label: 'Background' }];
   const row = (children: ReactNode) => <div className="create-grid">{children}</div>;
   return (
@@ -237,6 +244,7 @@ export function MaskPanel() {
           <button key={a.kind} className="create-btn" data-create={a.kind} disabled={!haveProvider} onClick={() => store.createSegmentMask(a.kind)}
             title={haveProvider ? `Select ${a.label.toLowerCase()}` : 'Unavailable: no segmentation model is installed'}>{a.label}</button>
         )))}
+        {row(unavailable.map((u) => <button key={u.id} className="create-btn" data-create={u.id} disabled title={u.why}>{u.label}</button>))}
         {!haveProvider && <p className="note" data-testid="ai-unavailable">Subject, Sky and Background selection need a segmentation model. None is installed in this build, so they are unavailable rather than faked. The plug-in interface is ready (see docs).</p>}
       </Panel>
       <Panel title={`Masks (${masks.length}/${MAX_MASKS})`}>

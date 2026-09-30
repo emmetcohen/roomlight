@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify:gpu": "node scripts/verify-gpu.mjs",
-    "verify:e2e": "node scripts/e2e.mjs && node scripts/e2e-phase567.mjs",
+    "verify:e2e": "node scripts/e2e.mjs && node scripts/e2e-phase567.mjs && node scripts/e2e-layout.mjs",
     "build:single": "npm run build && node scripts/build-single.mjs",
     "verify:build": "npm run build:single && node scripts/smoke-build.mjs"
   },
