@@ -38,7 +38,9 @@ export function Viewer() {
   const cropTab = useEditor((s) => s.cropTab);
   const clipboard = useEditor((s) => s.clipboard);
   const selectedMask = useEditor((s) => s.selectedMask);
-  const showOverlay = useEditor((s) => s.showOverlay);
+  const maskOverlay = useEditor((s) => s.maskOverlay);
+  const overlayHold = useEditor((s) => s.overlayHold);
+  const overlaySuppressed = useEditor((s) => s.overlaySuppressed);
   const zoom = useEditor((s) => s.zoom);
   const fullRes = useEditor((s) => s.fullRes);
   const fullResLoading = useEditor((s) => s.fullResLoading);
@@ -147,7 +149,7 @@ export function Viewer() {
 
   useEffect(() => () => { rendererRef.current?.dispose(); rendererRef.current = null; }, []);
 
-  const overlayIndex = tool === 'mask' && showOverlay && !showOriginal ? params.masks.findIndex((m) => m.id === selectedMask) : -1;
+  const overlayIndex = tool === 'mask' && (maskOverlay || overlayHold) && !overlaySuppressed && !showOriginal ? params.masks.findIndex((m) => m.id === selectedMask) : -1;
 
   // Render whenever inputs change (coalesced to one render per animation frame).
   useEffect(() => {

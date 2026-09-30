@@ -39,7 +39,9 @@ before/after, IndexedDB persistence (originals + edits + crops + masks), shortcu
 * **Detail:** input sharpening (Amount, Radius, Detail, Masking) and noise reduction (Luminance, Detail, Contrast; Color, Detail, Smoothness) on the source pixels, also per mask (Sharpness, Noise). Runs in a worker; included in exports.
 * **Parametric curve** next to the point curve; **Snapshots**; White Balance As Shot / Auto / Custom; Crop & Geometry tool with lock, guides, a draw-a-line straighten tool, Cancel and Constrain Crop.
 
-Layout: **Library | Edit** switch on top; tools (Edit, Crop & Geometry, Healing / Remove, Masking) in a vertical strip on the far right; Presets, History and Snapshots on the left; Library view = photo grid.
+Layout: **Library | Edit** switch on top; tools (Presets, Edit, Crop & Geometry, Healing / Remove, Masking) in a vertical strip on the far right; History and Snapshots on the left; Library view = photo grid.
+
+**Presets tool:** a grid of previews (each preset rendered on your photo), grouped; tap ☆ to favourite; the **Yours** tab holds favourites and the presets you save. **Masking tool:** one *Create New Mask* button (menu of mask types), a list of masks with live thumbnails and their shapes, *Add / Subtract / Intersect* menus, a *Show Overlay* switch (off by default; `O`). The red overlay shows while you hold a mask handle or paint, and hides while you drag a slider.
 
 Not built: Guided Upright, Objects / Depth Range masks, Auto Mask, automatic Remove Chromatic Aberration and Defringe, lens make/model database, "As Shot" crop aspect (same as Original), RAW/HEIC/TIFF decoding, real subject/sky selection (needs a model), lens database, wide-gamut/ICC output, tethering, print/web galleries.
 

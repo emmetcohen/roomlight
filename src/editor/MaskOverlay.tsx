@@ -53,9 +53,10 @@ export function MaskOverlay({ width, height, geo, srcW, srcH, view = IDENTITY_VI
     const start = toMask(e);
     if (!start) return;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    store.setOverlayHold(true); // show the red overlay while a handle is being dragged
     const el = e.currentTarget as Element;
     const move = (ev: globalThis.PointerEvent) => { const m = toMask(ev); if (m) onMove(m, start); };
-    const up = () => { el.removeEventListener('pointermove', move as EventListener); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); commit(label); };
+    const up = () => { el.removeEventListener('pointermove', move as EventListener); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); store.setOverlayHold(false); commit(label); };
     el.addEventListener('pointermove', move as EventListener);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
@@ -119,6 +120,7 @@ export function MaskOverlay({ width, height, geo, srcW, srcH, view = IDENTITY_VI
     if (shape.type === 'brush') {
       e.currentTarget.setPointerCapture(e.pointerId);
       painting.current = true;
+      store.setOverlayHold(true);
       store.beginStroke(m[0], m[1], e.pointerType === 'pen' ? e.pressure || 0.5 : 1);
     } else if (shape.type === 'color' && pickingColor) {
       const [x, y] = local(e);
@@ -136,7 +138,7 @@ export function MaskOverlay({ width, height, geo, srcW, srcH, view = IDENTITY_VI
       if (m) store.extendStroke(m[0], m[1], ev.pointerType === 'pen' ? ev.pressure || 0.5 : 1);
     }
   };
-  const onUp = () => { if (painting.current) { painting.current = false; store.endStroke(); } };
+  const onUp = () => { if (painting.current) { painting.current = false; store.setOverlayHold(false); store.endStroke(); } };
 
   return (
     <svg

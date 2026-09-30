@@ -77,7 +77,7 @@ export interface LoadedImage {
   pixels: Pixels;
 }
 
-export type Tool = 'edit' | 'crop' | 'mask' | 'retouch';
+export type Tool = 'presets' | 'edit' | 'crop' | 'mask' | 'retouch';
 export type Mode = 'library' | 'edit';
 export type CropTab = 'crop' | 'geometry';
 export type CropGuides = 'none' | 'thirds' | 'grid';
@@ -113,7 +113,12 @@ export interface EditorState {
   selectedSpot: string | null;
   retouch: RetouchSettings;
   brush: BrushSettings;
-  showOverlay: boolean;
+  showOverlay: boolean; // retouch spot markers
+  /** Red mask overlay: the toggle, held on while a mask handle/brush is being used, suppressed while a slider is being dragged. */
+  maskOverlay: boolean;
+  overlayHold: boolean;
+  overlaySuppressed: boolean;
+  favoritePresets: string[];
   pickingColor: boolean;
   ready: boolean;
   photos: PhotoSummary[];
@@ -164,6 +169,10 @@ const initial: EditorState = {
   retouch: { kind: 'heal', size: 30, feather: 40, opacity: 100 },
   brush: { size: 40, feather: 50, flow: 100, density: 100, erase: false },
   showOverlay: true,
+  maskOverlay: false,
+  overlayHold: false,
+  overlaySuppressed: false,
+  favoritePresets: [],
   pickingColor: false,
   ready: false,
   photos: [],
@@ -254,7 +263,7 @@ export class EditorStore {
       this.records.set(r.id, r);
       photos.push(this.summarize(r, infoBy.get(r.id) ?? defaultInfo(r.id), editedBy.get(r.id) ?? false));
     }
-    this.setPhotos(photos, { albums, userPresets, exportSettings: normalizeExport(await this.db.getMeta('exportSettings')) });
+    this.setPhotos(photos, { albums, userPresets, exportSettings: normalizeExport(await this.db.getMeta('exportSettings')), favoritePresets: ((await this.db.getMeta<string[]>('favoritePresets')) ?? []).filter((x) => typeof x === 'string') });
     this.set({ ready: true });
     void this.backfillInfo();
     const last = await this.db.getMeta<string>('lastPhotoId');
@@ -503,6 +512,16 @@ export class EditorStore {
   selectComp = (maskId: string, compId: string) => this.set({ selectedMask: maskId, selectedComp: compId, pickingColor: false });
   setBrush = (patch: Partial<BrushSettings>) => this.set({ brush: { ...this.state.brush, ...patch } });
   toggleOverlay = () => this.set({ showOverlay: !this.state.showOverlay });
+  toggleMaskOverlay = () => this.set({ maskOverlay: !this.state.maskOverlay });
+  setOverlayHold = (overlayHold: boolean) => { if (overlayHold !== this.state.overlayHold) this.set({ overlayHold }); };
+  /** A slider gesture is in progress: hide the overlay so the real result can be judged. */
+  setOverlaySuppressed = (overlaySuppressed: boolean) => { if (overlaySuppressed !== this.state.overlaySuppressed) this.set({ overlaySuppressed }); };
+
+  toggleFavoritePreset = (id: string) => {
+    const cur = this.state.favoritePresets, next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    this.set({ favoritePresets: next });
+    void this.db.setMeta('favoritePresets', next);
+  };
 
   /** Create a new mask from a shape. Explains why when a limit is hit. */
   createMask = (type: Shape['type']) => {

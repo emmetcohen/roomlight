@@ -5,6 +5,7 @@ import { ExportDialog } from './editor/ExportDialog';
 import { CopyDialog, PasteDialog, SavePresetDialog } from './editor/SettingsDialogs';
 import { MaskPanel } from './editor/MaskPanel';
 import { RetouchPanel } from './editor/RetouchPanel';
+import { PresetsView } from './editor/PresetsView';
 import { Filmstrip } from './editor/Filmstrip';
 import { Histogram } from './editor/Histogram';
 import { InfoPanel } from './editor/InfoPanel';
@@ -88,6 +89,7 @@ export default function App() {
                 : tool === 'crop' ? <CropTool />
                 : tool === 'mask' ? <MaskPanel />
                 : tool === 'retouch' ? <RetouchPanel />
+                : tool === 'presets' ? <PresetsView />
                 : <EditPanels />}
             </div>
           </aside>

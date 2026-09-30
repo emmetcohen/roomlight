@@ -161,11 +161,12 @@ try {
   await page.locator('.album-list li').first().locator('button').first().click();
   check('All photos shows everything again', (await page.locator('[data-photo]').count()) === 4);
 
-  // Presets (Edit view, left column)
+  // Presets (the first tool in the strip)
   await page.locator('[data-mode=edit]').click(); await page.waitForTimeout(400);
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(700);
   const beforePreset = await pixelAt(0.17, 0.78);
-  await page.locator('[data-preset="Neutral"] button').click(); await page.waitForTimeout(400);
+  await page.locator('[data-tool=presets]').click(); await page.waitForTimeout(300);
+  await page.locator('[data-preset="Neutral"] .preset-card').click(); await page.waitForTimeout(400);
   const bw = await pixelAt(0.17, 0.78);
   check('the Black & White preset removes colour from the picture', Math.abs(bw[0] - bw[1]) < 4 && Math.abs(bw[1] - bw[2]) < 4 && (Math.max(...beforePreset) - Math.min(...beforePreset) > 40), `${beforePreset} -> ${bw}`);
   check('a preset is ONE history entry', (await page.locator('.history-list li').first().innerText()).startsWith('Preset: Neutral'));
@@ -174,6 +175,7 @@ try {
   check('undo reverts the preset', Math.abs(undone[0] - beforePreset[0]) < 3);
 
   // Auto tone on the dark photo
+  await page.locator('[data-tool=edit]').click();
   await page.locator('[data-photo]').nth(3).click(); await page.waitForTimeout(700);
   await page.locator('[data-testid=auto-tone]').click(); await page.waitForTimeout(400);
   const exp = parseFloat(await page.locator('[data-param=exposure] .slider-number').inputValue());
@@ -183,14 +185,18 @@ try {
   // Save a user preset, apply it to two selected photos at once
   await page.locator('[data-param=vignetteAmount]').scrollIntoViewIfNeeded().catch(() => {});
   await page.locator('[data-photo]').nth(3).click();
-  await page.getByRole('button', { name: 'Save current as preset…' }).click();
+  await page.locator('[data-tool=presets]').click(); await page.locator('[data-testid=save-preset-btn]').click();
   await page.locator('input[aria-label="Preset name"]').fill('My Dark Fix');
   await page.locator('[data-testid=preset-save]').click(); await page.waitForTimeout(300);
-  check('user preset appears in the list', (await page.locator('[data-preset="My Dark Fix"]').count()) === 1);
+  await page.locator('[data-preset-tab=yours]').click();
+  check('user preset appears under Yours', (await page.locator('[data-preset="My Dark Fix"]').count()) === 1);
+  await page.locator('[data-tool=edit]').click();
   await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(500);
   await page.locator('[data-photo]').nth(2).click({ modifiers: ['Control'] }); await page.waitForTimeout(200);
   check('Ctrl-click builds a multi-selection', /2 selected/.test(await page.locator('[data-testid=selection-count]').innerText()));
-  await page.locator('[data-preset="My Dark Fix"] button').first().click(); await page.waitForTimeout(800);
+  await page.locator('[data-tool=presets]').click(); await page.locator('[data-preset-tab=yours]').click();
+  await page.locator('[data-preset="My Dark Fix"] .preset-card').first().click(); await page.waitForTimeout(800);
+  await page.locator('[data-tool=edit]').click();
   check('a preset applies to every selected photo', (await page.locator('.t-edited').count()) >= 3, `${await page.locator('.t-edited').count()} edited`);
 
   // Copy / paste settings
@@ -215,7 +221,7 @@ try {
   await page.locator('[data-mode=library]').click(); await page.waitForTimeout(300);
   check('ratings, flags and albums survive a reload', (await page.locator('[data-photo]').nth(1).getAttribute('data-rating')) === '4' && (await page.locator('[data-photo]').nth(1).getAttribute('data-flag')) === 'pick' && (await page.locator('[data-album]').count()) === 1);
   await page.locator('[data-mode=edit]').click(); await page.waitForTimeout(300);
-  check('user presets survive a reload', (await page.locator('.panel-toggle:has-text("Presets")').count()) === 1);
+  await page.locator('[data-tool=presets]').click(); await page.locator('[data-preset-tab=yours]').click(); await page.waitForTimeout(300);
   check('the saved preset is still listed', (await page.locator('[data-preset="My Dark Fix"]').count()) === 1);
   await page.screenshot({ path: 'scripts/.out/library.png' });
 
@@ -296,7 +302,7 @@ try {
   await closeExport();
   const colorBlock = async (b) => decodedPixel(b, 'image/jpeg', 200, 620);
   await openExport(); r = await doExport(); const plain = await colorBlock(r.bytes); await closeExport();
-  await page.locator('[data-preset="Neutral"] button').click(); await page.waitForTimeout(500);
+  await page.locator('[data-testid=bw-btn]').click(); await page.waitForTimeout(500);
   await openExport(); r = await doExport(); const mono = await colorBlock(r.bytes); await closeExport();
   check('edits are applied to the exported pixels (B&W preset removes colour)', Math.max(...plain) - Math.min(...plain) > 40 && Math.max(...mono) - Math.min(...mono) < 6, `${plain} -> ${mono}`);
   await page.keyboard.press('Control+z'); await page.waitForTimeout(300);

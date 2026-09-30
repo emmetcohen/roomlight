@@ -262,12 +262,17 @@ try {
 
   // ---------------------------------------------------------------- Phase 4: masks
   await page.locator('[data-tool=mask]').click(); await settle();
+  // Masking UI helpers (Create New Mask / Add / Subtract are menus; per-mask options live in a ⋯ menu)
+  const createMask = async (t) => { await page.locator('[data-testid=create-mask]').click(); await page.locator(`[data-create=${t}]`).click(); };
+  const maskMenu = async (name) => { await page.locator('[data-mask].selected [aria-label="Mask options"]').click(); await page.getByRole('menuitem', { name }).click(); };
+  await page.locator('[data-testid=create-mask]').click();
   check('masking: AI selections are disabled and honestly labelled (no fake AI)', (await page.locator('[data-create=subject]').isDisabled()) && (await page.locator('[data-create=sky]').isDisabled()) && (await page.locator('[data-create=background]').isDisabled()) && /unavailable/i.test(await page.locator('[data-testid=ai-unavailable]').innerText()));
+  await page.keyboard.press('Escape');
   const preMask = await shot();
-  await page.locator('[data-create=linear]').click(); await settle();
+  await createMask('linear'); await settle();
   check('linear gradient: created with draggable start/end handles', (await page.locator('.mask-list li').count()) === 1 && (await page.locator('[data-handle=start]').count()) === 1 && (await page.locator('[data-handle=end]').count()) === 1);
   const cleanShot = async () => { await page.locator('[data-tool=edit]').click(); await settle(); const v = await shot(); await page.locator('[data-tool=mask]').click(); await settle(); return v; };
-  await page.getByLabel('Show overlay').uncheck(); await settle(); // the red overlay tints the canvas; pixel checks look at the real render
+  check('the red mask overlay is OFF by default (it only tints the canvas when you ask for it)', !(await page.getByLabel('Show overlay').isChecked())); await settle();
   check('a new mask with no adjustments changes nothing (overlay off)', (await cleanShot()) === preMask);
   const lset = async (k, v) => { const input = page.locator(`[data-local=${k}] .slider-number`); await input.fill(String(v)); await input.press('Enter'); await settle(); };
   const skyBefore = await pixelAt(0.3, 0.15), groundBefore = await pixelAt(0.3, 0.92);
@@ -285,15 +290,15 @@ try {
   check('mask at zero adjustment changes nothing', (await cleanShot()) === preMask);
   // invert + amount
   const gPre = await pixelAt(0.3, 0.84), sPre = await pixelAt(0.3, 0.15); // (the overlay's dashed guide line sits near the bottom; sample clear of it)
-  await page.getByLabel('Invert mask').check(); await settle();
+  await maskMenu('Invert mask'); await settle();
   await lset('exposure', -1.5);
   check('invert mask flips where the adjustment applies', lum(await pixelAt(0.3, 0.84)) < lum(gPre) - 40 && lum(await pixelAt(0.3, 0.15)) >= lum(sPre) - 40, `ground ${lum(gPre)} -> ${lum(await pixelAt(0.3, 0.84))}, sky ${lum(sPre)} -> ${lum(await pixelAt(0.3, 0.15))}`);
-  await page.getByLabel('Invert mask').uncheck(); await settle();
+  await maskMenu('Invert mask'); await settle();
   await page.getByLabel('Mask Amount value').fill('0'); await page.getByLabel('Mask Amount value').press('Enter'); await settle();
   check('mask amount 0 turns the effect off', (await cleanShot()) === preMask);
   // radial
-  await page.locator('[data-mask]').first().locator('button[aria-label="Delete mask"]').click(); await settle();
-  await page.locator('[data-create=radial]').click(); await settle();
+  await maskMenu('Delete mask'); await settle();
+  await createMask('radial'); await settle();
   check('radial gradient: ellipse handles shown', (await page.locator('[data-handle=center]').count()) === 1 && (await page.locator('[data-handle=rotate]').count()) === 1);
   const cBefore = await pixelAt(0.56, 0.62);
   await lset('exposure', 1.5);
@@ -301,7 +306,7 @@ try {
   await page.getByLabel('Mask Rotation value').fill('45').catch(() => {});
   await page.screenshot({ path: 'scripts/.out/mask-radial.png' });
   // brush
-  await page.locator('[data-create=brush]').click(); await settle();
+  await createMask('brush'); await settle();
   await lset('exposure', -2);
   const ov = await page.locator('[data-testid=mask-overlay]').boundingBox();
   const brushBefore = await pixelAt(0.2, 0.75);
@@ -316,7 +321,7 @@ try {
   check('brush: eraser removes the painted mask again', (await topLabel()) === 'Erase Brush Stroke' && lum(await pixelAt(0.2, 0.75)) >= lum(brushBefore) - 20 && lum(await pixelAt(0.85, 0.75)) === lum(farBefore));
   await page.screenshot({ path: 'scripts/.out/mask-brush.png' });
   // colour range
-  await page.locator('[data-create=color]').click(); await settle();
+  await createMask('color'); await settle();
   await page.getByRole('button', { name: /Click the photo/ }).waitFor();
   const greenBefore = await pixelAt(0.41, 0.76), redBefore = await pixelAt(0.19, 0.76);
   const cv2 = await page.locator('[data-testid=mask-overlay]').boundingBox();
@@ -329,12 +334,12 @@ try {
   check('colour range: only the green block is desaturated; the red block is untouched', Math.max(...gAfter) - Math.min(...gAfter) < 25 && Math.max(...greenBefore) - Math.min(...greenBefore) > 60 && rAfter.every((v, i) => v === redBefore[i]), `green ${greenBefore}->${gAfter}, red ${redBefore}->${rAfter}`);
   await page.screenshot({ path: 'scripts/.out/mask-color.png' });
   // luminance range
-  await page.locator('[data-create=luminance]').click(); await settle();
+  await createMask('luminance'); await settle();
   const brightBefore = await pixelAt(0.5, 0.46), darkBefore = await pixelAt(0.5, 0.96);
   await lset('exposure', -2);
   check('luminance range: bright tones are darkened, shadows are not', lum(await pixelAt(0.5, 0.46)) < lum(brightBefore) - 60 && lum(await pixelAt(0.5, 0.96)) >= lum(darkBefore) - 6, `bright ${lum(brightBefore)}->${lum(await pixelAt(0.5, 0.46))} dark ${lum(darkBefore)}->${lum(await pixelAt(0.5, 0.96))}`);
   // combine: add a subtract component
-  await page.locator('[data-add="subtract:radial"]').click(); await settle();
+  await page.locator('[data-testid=menu-subtract]').click(); await page.locator('[data-add="subtract:radial"]').click(); await settle();
   check('components: subtract adds a second component to the same mask', (await page.locator('.comp-row').count()) === 2);
   // overlay toggle + persistence
   const masksBefore = await page.locator('.mask-list li').count();

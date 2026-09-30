@@ -311,3 +311,22 @@ describe('AI selection architecture (no model is installed)', () => {
     clearSegmentRasters(); clearSegmentationProviders();
   });
 });
+
+import { maskPreview } from '../src/masks/preview';
+describe('mask thumbnail', () => {
+  const span = { hw: 0.5, hh: 0.375 }, grey = () => [0.3, 0.3, 0.3] as [number, number, number];
+  it('a radial mask is bright in the middle and dark outside; the thumbnail follows invert', () => {
+    const m = newMask(newShape('radial', span), 'M');
+    const g = maskPreview(m, span, grey, 32, 24), at = (x: number, y: number) => g[y * 32 + x];
+    expect(at(16, 12)).toBeGreaterThan(200); expect(at(1, 1)).toBeLessThan(10);
+    const inv = maskPreview({ ...m, invert: true }, span, grey, 32, 24);
+    expect(inv[12 * 32 + 16]).toBeLessThan(10); expect(inv[1 * 32 + 1]).toBeGreaterThan(200);
+  });
+  it('honours Amount, and range masks look at the picture', () => {
+    const m = { ...newMask(newShape('radial', span), 'M'), amount: 50 };
+    expect(maskPreview(m, span, grey, 32, 24)[12 * 32 + 16]).toBeLessThan(140);
+    const lum = { ...newMask({ type: 'luminance', min: 60, max: 100, smooth: 10 }, 'L') };
+    expect(maskPreview(lum, span, () => [0.8, 0.8, 0.8], 8, 6)[0]).toBeGreaterThan(200);
+    expect(maskPreview(lum, span, () => [0.01, 0.01, 0.01], 8, 6)[0]).toBeLessThan(10);
+  });
+});

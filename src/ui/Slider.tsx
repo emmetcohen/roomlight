@@ -84,6 +84,12 @@ export function SliderView(b: SliderBinding) {
         value={b.value}
         aria-label={name}
         onChange={(e) => b.onPreview(parseFloat(e.target.value))}
+        onPointerDown={() => {
+          // hide the mask overlay for the whole gesture; release is caught on the window because a range input can swallow its own pointerup
+          store.setOverlaySuppressed(true);
+          const end = () => { window.removeEventListener('pointerup', end, true); window.removeEventListener('pointercancel', end, true); store.setOverlaySuppressed(false); };
+          window.addEventListener('pointerup', end, true); window.addEventListener('pointercancel', end, true);
+        }}
         onPointerUp={b.onCommit}
         onPointerCancel={b.onCommit}
         onKeyDown={onKey}

@@ -343,7 +343,7 @@ CROP & GEOMETRY = composition, orientation, perspective (tabs: Crop | Geometry)
 HEALING / REMOVE = repair parts of the image
 MASKING = local adjustments to selected areas
 ```
-Top bar: Library | Edit switch (the only navigation), filename, Undo / Redo / Before-After / Export. Edit view: left = Presets, History, Snapshots; centre = photo + image toolbar (Fit, Fill, 100 %, 200 %,
+Top bar: Library | Edit switch (the only navigation), filename, Undo / Redo / Before-After / Export. Edit view: left = History, Snapshots (Presets is the first tool in the strip: thumbnails are the preset applied to the open photo, rendered by the CPU pipeline at 144 px); centre = photo + image toolbar (Fit, Fill, 100 %, 200 %,
 Auto, B&W, Reset, Copy, Paste); right = histogram above the active tool's panels, with a thin vertical tool strip on the far right edge; bottom = filmstrip. The Crop tab shows the whole rotated canvas with the crop
 rectangle; the Geometry tab (and every other tool) shows the result. **Cancel** in Crop & Geometry rewinds the history to where the tool was opened. **Constrain Crop** (Geometry tab) decides whether geometry edits shrink the crop.
 

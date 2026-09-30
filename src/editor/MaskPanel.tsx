@@ -1,9 +1,12 @@
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { linearToSrgb } from '../color/colorSpace';
 import { SLIDER_BY_KEY } from '../image-engine/params';
 import { oklabToLinear } from '../image-engine/oklab';
 import { listSegmentationProviders } from '../masks/segmentation';
-import { LOCAL_EXTRA, MAX_MASKS, SHAPE_LABEL, type LocalKey, type Mask, type MaskComponent, type MaskOp, type Shape } from '../masks/types';
+import { LOCAL_EXTRA, MAX_MASKS, SHAPE_LABEL, spanOf, type LocalKey, type Mask, type MaskComponent, type MaskOp, type Shape } from '../masks/types';
+import { maskPreview } from '../masks/preview';
+import { srgbToLinear } from '../color/colorSpace';
+import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Panel } from '../ui/Panel';
 import { SliderView } from '../ui/Slider';
 import { store, useEditor } from './store';
@@ -15,13 +18,6 @@ const ADJUST_GROUPS: { title: string; keys: LocalKey[] }[] = [
   { title: 'Detail', keys: ['sharpness', 'noise'] },
 ];
 
-const CREATE: { type: Shape['type']; label: string; key: string }[] = [
-  { type: 'brush', label: 'Brush', key: 'B' },
-  { type: 'linear', label: 'Linear Gradient', key: 'L' },
-  { type: 'radial', label: 'Radial Gradient', key: 'R' },
-  { type: 'color', label: 'Color Range', key: '' },
-  { type: 'luminance', label: 'Luminance Range', key: '' },
-];
 
 function LocalSlider({ mask, k }: { mask: Mask; k: LocalKey }) {
   const extra = LOCAL_EXTRA[k];
@@ -153,44 +149,97 @@ function rotateLine(s: Extract<Shape, { type: 'linear' }>, deg: number): Shape {
   return { ...s, x1: mx - Math.cos(t) * half, y1: my - Math.sin(t) * half, x2: mx + Math.cos(t) * half, y2: my + Math.sin(t) * half };
 }
 
-const OPS: { op: MaskOp; label: string }[] = [{ op: 'add', label: 'Add' }, { op: 'subtract', label: 'Subtract' }, { op: 'intersect', label: 'Intersect' }];
+const OPS: { op: MaskOp; label: string; icon: string }[] = [{ op: 'add', label: 'Add', icon: '＋' }, { op: 'subtract', label: 'Subtract', icon: '⊖' }, { op: 'intersect', label: 'Intersect', icon: '∩' }];
+const OP_ICON: Record<MaskOp, string> = { add: '', subtract: '⊖', intersect: '∩' };
+const SHAPES: Shape['type'][] = ['brush', 'linear', 'radial', 'color', 'luminance'];
+const SHAPE_NAME: Record<Shape['type'], string> = { ...SHAPE_LABEL };
+
+/** The list thumbnail: white where the mask applies. Drawn with the same maths as rendering. */
+function MaskThumb({ mask }: { mask: Mask }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const image = useEditor((s) => s.image);
+  const geometry = useMemo(() => JSON.stringify(mask.components) + mask.invert + mask.amount, [mask]);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || !image) return;
+    const a = image.analysis, span = spanOf(image.bitmap.width, image.bitmap.height), L = Math.max(image.bitmap.width, image.bitmap.height);
+    const sample = (mx: number, my: number): [number, number, number] => {
+      const x = Math.min(a.width - 1, Math.max(0, Math.round(((mx * L) / image.bitmap.width + 0.5) * a.width - 0.5))), y = Math.min(a.height - 1, Math.max(0, Math.round(((my * L) / image.bitmap.height + 0.5) * a.height - 0.5))), i = (y * a.width + x) * 4;
+      return [srgbToLinear(a.data[i] / 255), srgbToLinear(a.data[i + 1] / 255), srgbToLinear(a.data[i + 2] / 255)];
+    };
+    const w = 48, h = Math.max(12, Math.round((48 * span.hh) / span.hw));
+    const g = maskPreview(mask, span, sample, w, h);
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d')!, img = ctx.createImageData(w, h);
+    for (let i = 0; i < g.length; i++) { img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = g[i]; img.data[i * 4 + 3] = 255; }
+    ctx.putImageData(img, 0, 0);
+  }, [geometry, image]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <canvas ref={ref} className="mask-thumb" aria-hidden />;
+}
+
+function AddMenu({ op, maskId }: { op: MaskOp; maskId: string }) {
+  const o = OPS.find((x) => x.op === op)!;
+  return (
+    <Menu label={<><span className="ic">{o.icon}</span> {o.label}</>} className="tool add-btn" testId={`menu-${op}`} ariaLabel={`${o.label} to mask`}>
+      {SHAPES.map((t) => <MenuItem key={t} data-add={`${op}:${t}`} onClick={() => { store.selectMask(maskId); store.addComponent(t, op); }}>{SHAPE_NAME[t]}</MenuItem>)}
+    </Menu>
+  );
+}
 
 function ComponentRow({ mask, comp, index }: { mask: Mask; comp: MaskComponent; index: number }) {
   const selected = useEditor((s) => s.selectedComp === comp.id);
   return (
-    <li className={`comp-row${selected ? ' selected' : ''}`} data-comp={comp.shape.type}>
-      <button className="comp-name" onClick={() => store.selectComp(mask.id, comp.id)}>{SHAPE_LABEL[comp.shape.type]}</button>
-      {index > 0 ? (
-        <select aria-label="Combine with previous" value={comp.op} onChange={(e) => store.setComponentMeta(mask.id, comp.id, { op: e.target.value as MaskOp }, 'Change Mask Operation')}>
-          {OPS.map((o) => <option key={o.op} value={o.op}>{o.label}</option>)}
-        </select>
-      ) : comp.op !== 'add' ? (
-        <select aria-label="Combine" value={comp.op} onChange={(e) => store.setComponentMeta(mask.id, comp.id, { op: e.target.value as MaskOp }, 'Change Mask Operation')}>
-          {OPS.map((o) => <option key={o.op} value={o.op}>{o.label}</option>)}
-        </select>
-      ) : <span className="muted small">base</span>}
-      <label className="chk" title="Invert this component"><input type="checkbox" checked={comp.invert} onChange={(e) => store.setComponentMeta(mask.id, comp.id, { invert: e.target.checked }, 'Invert Mask Component')} />Inv</label>
-      <button className="icon" aria-label="Delete component" title="Delete component" onClick={() => store.removeComponent(mask.id, comp.id)}>×</button>
+    <div className={`comp-row${selected ? ' selected' : ''}`} data-comp={comp.shape.type}>
+      <span className="comp-arrow" aria-hidden>{index === 0 ? '↳' : OP_ICON[comp.op] || '＋'}</span>
+      <button className="comp-name" onClick={() => store.selectComp(mask.id, comp.id)}>{SHAPE_NAME[comp.shape.type]}{comp.invert ? ' (inverted)' : ''}{index > 0 && comp.op !== 'add' ? ` · ${comp.op}` : ''}</button>
+      <Menu label="⋯" className="icon" ariaLabel="Component options" align="right">
+        {OPS.map((o) => <MenuItem key={o.op} data-comp-op={o.op} disabled={comp.op === o.op} onClick={() => store.setComponentMeta(mask.id, comp.id, { op: o.op }, 'Change Mask Operation')}>Combine by {o.label.toLowerCase()}{comp.op === o.op ? ' ✓' : ''}</MenuItem>)}
+        <MenuSeparator />
+        <MenuItem data-comp-invert="1" onClick={() => store.setComponentMeta(mask.id, comp.id, { invert: !comp.invert }, 'Invert Mask Component')}>{comp.invert ? '✓ ' : ''}Invert this shape</MenuItem>
+        <MenuItem aria-label="Delete component" onClick={() => store.removeComponent(mask.id, comp.id)}>Delete this shape</MenuItem>
+      </Menu>
+    </div>
+  );
+}
+
+function MaskRow({ mask }: { mask: Mask }) {
+  const selected = useEditor((s) => s.selectedMask === mask.id);
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(mask.name);
+  return (
+    <li className={`mask-row${selected ? ' selected' : ''}${mask.enabled ? '' : ' off'}`} data-mask={mask.id}>
+      <div className="mask-head">
+        <button className="mask-thumb-btn" aria-label={`Select ${mask.name}`} onClick={() => store.selectMask(mask.id)}><MaskThumb mask={mask} /></button>
+        {renaming ? (
+          <input className="text" autoFocus aria-label="Mask name" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => { setRenaming(false); if (name.trim() && name !== mask.name) store.updateMaskMeta(mask.id, { name }, 'Rename Mask'); }} onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { setName(mask.name); setRenaming(false); } e.stopPropagation(); }} />
+        ) : (
+          <button className="mask-name" onClick={() => store.selectMask(mask.id)} onDoubleClick={() => { setName(mask.name); setRenaming(true); }} title="Double-click to rename">{mask.name}</button>
+        )}
+        <button className="icon" aria-label={mask.enabled ? 'Hide mask' : 'Show mask'} title={mask.enabled ? 'Disable mask' : 'Enable mask'} onClick={() => store.updateMaskMeta(mask.id, { enabled: !mask.enabled }, mask.enabled ? 'Disable Mask' : 'Enable Mask')}>{mask.enabled ? '👁' : '◌'}</button>
+        <Menu label="⋯" className="icon" ariaLabel="Mask options" align="right" testId={selected ? 'mask-options' : undefined}>
+          <MenuItem data-mask-invert="1" onClick={() => store.updateMaskMeta(mask.id, { invert: !mask.invert }, 'Invert Mask')}>{mask.invert ? '✓ ' : ''}Invert mask</MenuItem>
+          <MenuItem aria-label="Duplicate mask" onClick={() => store.duplicateMask(mask.id)}>Duplicate mask</MenuItem>
+          <MenuItem onClick={() => { setName(mask.name); setRenaming(true); }}>Rename…</MenuItem>
+          <MenuItem disabled={Object.keys(mask.adjust).length === 0} onClick={() => store.resetMaskAdjust(mask.id)}>Reset adjustments</MenuItem>
+          <MenuSeparator />
+          <MenuItem aria-label="Delete mask" onClick={() => store.removeMask(mask.id)}>Delete mask</MenuItem>
+        </Menu>
+      </div>
+      {selected && (
+        <div className="comp-block">
+          {mask.components.map((c, i) => <ComponentRow key={c.id} mask={mask} comp={c} index={i} />)}
+          <div className="comp-actions"><AddMenu op="add" maskId={mask.id} /><AddMenu op="subtract" maskId={mask.id} /><AddMenu op="intersect" maskId={mask.id} /></div>
+        </div>
+      )}
     </li>
   );
 }
 
 function MaskDetails({ mask }: { mask: Mask }) {
   const comp = useEditor((s) => mask.components.find((c) => c.id === s.selectedComp) ?? mask.components[0]);
-  const showOverlay = useEditor((s) => s.showOverlay);
-  const anyAdjust = Object.keys(mask.adjust).length > 0;
   return (
     <>
-      <Panel title="Mask" >
-        <div className="mask-name-row">
-          <input aria-label="Mask name" className="text" value={mask.name} onChange={(e) => store.updateMaskMeta(mask.id, { name: e.target.value }, 'Rename Mask')} />
-        </div>
-        <ul className="comp-list">{mask.components.map((c, i) => <ComponentRow key={c.id} mask={mask} comp={c} index={i} />)}</ul>
-        <AddComponent />
-        <div className="mask-flags">
-          <label className="chk"><input type="checkbox" checked={mask.invert} onChange={(e) => store.updateMaskMeta(mask.id, { invert: e.target.checked }, 'Invert Mask')} />Invert mask</label>
-          <label className="chk"><input type="checkbox" checked={showOverlay} onChange={store.toggleOverlay} />Show overlay</label>
-        </div>
+      <Panel title="Mask strength">
         <SliderView
           label="Amount" ariaLabel="Mask Amount" value={mask.amount} min={0} max={100} step={1} defaultValue={100} signed={false}
           onPreview={(v) => store.previewMaskMeta(mask.id, { amount: v })} onCommit={() => store.commitLocal('Adjust Mask Amount')}
@@ -203,62 +252,42 @@ function MaskDetails({ mask }: { mask: Mask }) {
           {g.keys.map((k) => <LocalSlider key={k} mask={mask} k={k} />)}
         </Panel>
       ))}
-      <div className="pad"><button className="tool" disabled={!anyAdjust} onClick={() => store.resetMaskAdjust(mask.id)}>Reset adjustments</button></div>
     </>
   );
 }
 
-function AddComponent() {
-  const types: Shape['type'][] = ['brush', 'linear', 'radial', 'color', 'luminance'];
-  return (
-    <div className="add-comp">
-      <div className="muted small">Combine with another shape</div>
-      {OPS.map((o) => (
-        <div key={o.op} className="add-row">
-          <span>{o.label}</span>
-          {types.map((t) => <button key={t} className="tool" title={`${o.label}: ${SHAPE_LABEL[t]}`} data-add={`${o.op}:${t}`} onClick={() => store.addComponent(t, o.op)}>{SHAPE_LABEL[t].split(' ')[0]}</button>)}
-        </div>
-      ))}
-    </div>
-  );
-}
-
+/** The Masking tool: Create New Mask, the list of masks (with thumbnails and their shapes), Show Overlay, then the selected mask's settings. */
 export function MaskPanel() {
   const masks = useEditor((s) => s.params.masks);
   const selected = useEditor((s) => s.selectedMask);
+  const overlay = useEditor((s) => s.maskOverlay);
   const mask = masks.find((m) => m.id === selected);
   const haveProvider = listSegmentationProviders().length > 0;
-  const unavailable: { id: string; label: string; why: string }[] = [
-    { id: 'objects', label: 'Objects', why: 'Needs a segmentation model (none is installed)' },
-    { id: 'depth', label: 'Depth Range', why: 'Needs depth information (none is available for JPEG/PNG/WebP files)' },
-  ];
-  const ai: { kind: 'subject' | 'sky' | 'background'; label: string }[] = [{ kind: 'subject', label: 'Subject' }, { kind: 'sky', label: 'Sky' }, { kind: 'background', label: 'Background' }];
-  const row = (children: ReactNode) => <div className="create-grid">{children}</div>;
+  const ai: { kind: 'subject' | 'sky' | 'background'; label: string }[] = [{ kind: 'subject', label: 'Select Subject' }, { kind: 'sky', label: 'Select Sky' }, { kind: 'background', label: 'Select Background' }];
+  const off = (id: string, label: string, why: string) => <MenuItem key={id} data-create={id} disabled title={why}>{label}</MenuItem>;
   return (
     <>
-      <Panel title="Create New Mask">
-        {row(CREATE.map((c) => (
-          <button key={c.type} className="create-btn" data-create={c.type} onClick={() => store.createMask(c.type)} title={c.key ? `${c.label} (${c.key})` : c.label}>{c.label}{c.key && <kbd>{c.key}</kbd>}</button>
-        )))}
-        {row(ai.map((a) => (
-          <button key={a.kind} className="create-btn" data-create={a.kind} disabled={!haveProvider} onClick={() => store.createSegmentMask(a.kind)}
-            title={haveProvider ? `Select ${a.label.toLowerCase()}` : 'Unavailable: no segmentation model is installed'}>{a.label}</button>
-        )))}
-        {row(unavailable.map((u) => <button key={u.id} className="create-btn" data-create={u.id} disabled title={u.why}>{u.label}</button>))}
-        {!haveProvider && <p className="note" data-testid="ai-unavailable">Subject, Sky and Background selection need a segmentation model. None is installed in this build, so they are unavailable rather than faked. The plug-in interface is ready (see docs).</p>}
-      </Panel>
       <Panel title={`Masks (${masks.length}/${MAX_MASKS})`}>
-        {masks.length === 0 && <p className="note">No masks yet. Create one above, then adjust only that area.</p>}
-        <ul className="mask-list">
-          {masks.map((m) => (
-            <li key={m.id} className={`mask-row${m.id === selected ? ' selected' : ''}${m.enabled ? '' : ' off'}`} data-mask={m.id}>
-              <button className="icon" aria-label={m.enabled ? 'Hide mask' : 'Show mask'} title={m.enabled ? 'Disable mask' : 'Enable mask'} onClick={() => store.updateMaskMeta(m.id, { enabled: !m.enabled }, m.enabled ? 'Disable Mask' : 'Enable Mask')}>{m.enabled ? '◉' : '○'}</button>
-              <button className="mask-name" onClick={() => store.selectMask(m.id)}>{m.name}</button>
-              <button className="icon" aria-label="Duplicate mask" title="Duplicate" onClick={() => store.duplicateMask(m.id)}>⧉</button>
-              <button className="icon" aria-label="Delete mask" title="Delete mask" onClick={() => store.removeMask(m.id)}>×</button>
-            </li>
-          ))}
-        </ul>
+        <Menu label={<><span className="plus-circle">＋</span><span>Create New Mask</span></>} className="create-mask" testId="create-mask" ariaLabel="Create new mask">
+          {ai.map((a) => <MenuItem key={a.kind} data-create={a.kind} disabled={!haveProvider} title={haveProvider ? undefined : 'Unavailable: no segmentation model is installed'} onClick={() => store.createSegmentMask(a.kind)}>{a.label}</MenuItem>)}
+          {off('objects', 'Objects', 'Needs a segmentation model (none is installed)')}
+          <MenuSeparator />
+          <MenuItem data-create="brush" hint="B" onClick={() => store.createMask('brush')}>Brush</MenuItem>
+          <MenuItem data-create="linear" hint="L" onClick={() => store.createMask('linear')}>Linear Gradient</MenuItem>
+          <MenuItem data-create="radial" hint="R" onClick={() => store.createMask('radial')}>Radial Gradient</MenuItem>
+          <MenuSeparator />
+          <MenuItem data-create="color" onClick={() => store.createMask('color')}>Color Range</MenuItem>
+          <MenuItem data-create="luminance" onClick={() => store.createMask('luminance')}>Luminance Range</MenuItem>
+          {off('depth', 'Depth Range', 'Needs depth information (none is available for JPEG/PNG/WebP files)')}
+        </Menu>
+        {masks.length === 0 && <p className="note">No masks yet. Create one, then adjust only that area.</p>}
+        <ul className="mask-list">{masks.map((m) => <MaskRow key={m.id} mask={m} />)}</ul>
+        <div className="overlay-row">
+          <label className="switch" title="Show the selected mask as a red overlay (O). It is hidden while you drag a slider.">
+            <input type="checkbox" role="switch" aria-label="Show overlay" checked={overlay} onChange={store.toggleMaskOverlay} /><span className="knob" /> <span className="muted">Show Overlay</span>
+          </label>
+        </div>
+        {!haveProvider && <p className="note" data-testid="ai-unavailable">Subject, Sky and Background selection need a segmentation model. None is installed in this build, so they are unavailable rather than faked.</p>}
       </Panel>
       {mask ? <MaskDetails key={mask.id} mask={mask} /> : masks.length > 0 && <p className="note pad">Select a mask to edit it.</p>}
     </>

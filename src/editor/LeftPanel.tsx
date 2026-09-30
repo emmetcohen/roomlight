@@ -1,14 +1,12 @@
 import { Panel } from '../ui/Panel';
 import { SHORTCUTS } from '../utils/shortcuts';
 import { HistoryPanel } from './HistoryPanel';
-import { PresetsPanel } from './PresetsPanel';
 import { SnapshotsPanel } from './SnapshotsPanel';
 
-/** Edit view, left: Presets, History, Snapshots (and the shortcut list, collapsed). */
+/** Edit view, left: History, Snapshots (and the shortcut list, collapsed). Presets live in the tool strip. */
 export function LeftPanel() {
   return (
     <>
-      <PresetsPanel />
       <Panel title="History"><HistoryPanel /></Panel>
       <Panel title="Snapshots"><SnapshotsPanel /></Panel>
       <Panel title="Keyboard shortcuts" defaultOpen={false}>

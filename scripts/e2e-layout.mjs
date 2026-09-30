@@ -84,7 +84,7 @@ try {
   const strip = await box('nav.tool-strip'), panelCol = await box('aside.right');
   check('tool strip is a thin vertical column on the FAR RIGHT edge, beside the panel column', strip.x + strip.width >= vw - 2 && strip.width < 70 && strip.height > strip.width * 3 && strip.x >= panelCol.x + panelCol.width - 2, JSON.stringify(strip));
   const toolIds = await page.locator('nav.tool-strip [data-tool]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tool')));
-  check('four tools, top to bottom: Edit, Crop & Geometry, Healing / Remove, Masking', toolIds.join() === 'edit,crop,retouch,mask');
+  check('tools, top to bottom: Presets, Edit, Crop & Geometry, Healing / Remove, Masking', toolIds.join() === 'presets,edit,crop,retouch,mask');
   const ys = await page.locator('nav.tool-strip [data-tool]').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().y));
   check('…stacked vertically in that order', ys.every((y, i) => i === 0 || y > ys[i - 1]));
   check('Edit is the default tool and only one tool is active', (await page.locator('nav.tool-strip button.on').count()) === 1 && (await page.locator('[data-tool=edit].on').count()) === 1);
@@ -92,7 +92,7 @@ try {
   const titles = await panelTitles();
   check('Edit panels, top to bottom: Basic, Curve, Color Mixer, Color Grading, Detail, Optics, Effects', titles.join('|') === 'Basic|Curve|Color Mixer|Color Grading|Detail|Optics|Effects', titles.join('|'));
   const leftTitles = await page.locator('aside.left .panel-toggle').allInnerTexts().then((a) => a.map((t) => t.replace(/[▸▾]/g, '').trim()));
-  check('left panel: Presets, History, Snapshots', leftTitles.slice(0, 3).join('|') === 'Presets|History|Snapshots', leftTitles.join('|'));
+  check('left panel: History, Snapshots (Presets moved to the tool strip)', leftTitles.slice(0, 2).join('|') === 'History|Snapshots' && !leftTitles.includes('Presets'), leftTitles.join('|'));
   check('Geometry (Upright, Transform) is NOT in the Edit panels', (await page.locator('.right [data-upright]').count()) === 0 && (await page.locator('.right [data-param=geoVertical]').count()) === 0 && !titles.includes('Geometry'));
   await openPanel('Effects'); await openPanel('Basic');
   check('Texture, Clarity and Dehaze appear once, in Basic > Presence', (await page.locator('[data-param=clarity]').count()) === 1 && (await page.locator('[data-param=texture]').count()) === 1 && (await page.locator('[data-param=dehaze]').count()) === 1);
@@ -117,7 +117,7 @@ try {
   await page.locator('[data-tool=retouch]').click(); await page.waitForTimeout(300);
   check('Healing / Remove tool: Remove, Heal, Clone + Size, Feather, Opacity + Show overlay', (await page.locator('[data-spot-kind]').evaluateAll((e) => e.map((x) => x.getAttribute('data-spot-kind'))).then((a) => a.sort().join())) === 'clone,heal,remove' && (await page.locator('[data-retouch]').count()) === 3 && (await page.locator('label.chk:has-text("Show spots")').count()) === 1 && (await histVisible()));
   await page.locator('[data-tool=mask]').click(); await page.waitForTimeout(300);
-  check('Masking tool: Create New Mask panel, histogram stays', (await page.locator('[data-create=brush]').count()) === 1 && (await histVisible()));
+  check('Masking tool: a single Create New Mask button (no grid of buttons), histogram stays', (await page.locator('[data-testid=create-mask]').count()) === 1 && (await page.locator('[data-create]').count()) === 0 && (await histVisible()));
   await page.locator('[data-tool=edit]').click(); await page.waitForTimeout(300);
   check('clicking Edit returns to the normal panels', (await panelTitles()).includes('Basic'));
   check('the Healing tool is not inside any Edit panel', (await page.locator('.right [data-spot-kind]').count()) === 0);
@@ -278,6 +278,7 @@ try {
 
   // ======================================================================= Masking tool
   await page.locator('[data-tool=mask]').click(); await page.waitForTimeout(300);
+  await page.locator('[data-testid=create-mask]').click();
   const create = await page.locator('[data-create]').evaluateAll((e) => e.map((x) => `${x.getAttribute('data-create')}${x.disabled ? '(off)' : ''}`));
   check('Masking > Create: Subject, Sky, Background, Objects, Brush, Linear, Radial, Color Range, Luminance Range, Depth Range (AI/depth ones shown but unavailable)', ['subject(off)', 'sky(off)', 'background(off)', 'objects(off)', 'brush', 'linear', 'radial', 'color', 'luminance', 'depth(off)'].every((c) => create.includes(c)), create.join());
   await page.locator('[data-create=radial]').click(); await page.waitForTimeout(400);
@@ -286,12 +287,17 @@ try {
   check('per-mask adjustments appear after a mask is selected: Light, Color, Effects, Detail', ['Light', 'Color', 'Effects', 'Detail'].every((g) => groups.includes(g)), groups.join('|'));
   const lk = await page.locator('.right [data-local]').evaluateAll((e) => e.map((x) => x.getAttribute('data-local')));
   check('…with Exposure…Blacks, Temperature, Tint, Saturation, Texture, Clarity, Dehaze, Sharpness, Noise', ['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temperature', 'tint', 'saturation', 'texture', 'clarity', 'dehaze', 'sharpness', 'noise'].every((k) => lk.includes(k)), lk.join());
-  check('mask list has visibility toggle and delete; Add/Subtract/Intersect/Invert and an overlay toggle exist', (await page.locator('.mask-row [aria-label*="mask"]').count()) >= 2 && (await page.locator('[data-add="subtract:linear"]').count()) === 1 && (await page.locator('label:has-text("Invert mask")').count()) === 1 && (await page.locator('label:has-text("Show overlay")').count()) === 1);
+  await page.locator('[data-testid=menu-subtract]').click();
+  const subItems = await page.locator('[data-add^="subtract:"]').count();
+  await page.keyboard.press('Escape');
+  await page.locator('[data-mask].selected [aria-label="Mask options"]').click();
+  const opts = await page.getByRole('menuitem').allInnerTexts();
+  await page.keyboard.press('Escape');
+  check('mask list: thumbnail, visibility toggle, Add / Subtract / Intersect menus, Invert in the ⋯ menu, an overlay switch', (await page.locator('.mask-row .mask-thumb').count()) === 1 && (await page.locator('.mask-row [aria-label="Hide mask"]').count()) === 1 && subItems === 5 && (await page.locator('[data-testid=menu-add]').count()) === 1 && (await page.locator('[data-testid=menu-intersect]').count()) === 1 && opts.join('|').includes('Invert mask') && opts.join('|').includes('Delete mask') && (await page.getByLabel('Show overlay').count()) === 1, opts.join('|'));
   check('the Global Edit panels are not in the Masking tool', !groups.includes('Basic') && !groups.includes('Curve'));
   // a mask with Noise really denoises only inside it (radial mask in the centre of the noisy photo)
   await page.locator('[data-tool=edit]').click(); await page.waitForTimeout(200);
   await page.locator('[data-tool=mask]').click(); await page.waitForTimeout(200);
-  await page.getByLabel('Show overlay').uncheck();
   await page.locator('[data-tool=edit]').click();
 
   // ======================================================================= Snapshots, toolbar buttons
@@ -322,6 +328,90 @@ try {
   await page.locator('[data-zoom-btn=fill]').click(); await page.waitForTimeout(500);
   check('toolbar Fill zooms so the photo covers the window', (await page.locator('[data-testid=viewer-canvas]').getAttribute('data-zoom')) !== 'fit');
   await page.locator('[data-zoom-btn=fit]').click();
+
+
+  // ======================================================================= Mask overlay behaviour + compact Masks panel
+  await page.locator('.filmstrip [data-photo]').nth(1).click(); await page.waitForTimeout(900); await blur();
+  await page.locator('[data-testid=reset-all]').click({ timeout: 2000 }).catch(() => {}); await page.waitForTimeout(300);
+  await page.locator('[data-tool=mask]').click(); await page.waitForTimeout(300);
+  const px = async (fx, fy) => page.evaluate(async ([b64, fx, fy]) => { const bmp = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob()); const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const g = c.getContext('2d'); g.drawImage(bmp, 0, 0); return Array.from(g.getImageData(Math.round(bmp.width * fx), Math.round(bmp.height * fy), 1, 1).data).slice(0, 3); }, [(await canvasPng()).toString('base64'), fx, fy]);
+  const reddish = (p) => p[0] - p[2] > -60; // the sky is blue (R-B = -118); the red overlay pushes it up
+  await page.locator('[data-testid=create-mask]').click(); await page.locator('[data-create=radial]').click(); await page.waitForTimeout(500);
+  check('a new mask does NOT tint the picture red (overlay is off until you ask)', !reddish(await px(0.5, 0.3)) && !(await page.getByLabel('Show overlay').isChecked()));
+  await page.locator('label.switch').click(); await page.waitForTimeout(400);
+  check('the Show Overlay switch shows the mask in red', reddish(await px(0.5, 0.3)));
+  const slider = page.locator('[data-local=exposure] .slider-range'); await slider.scrollIntoViewIfNeeded(); const sb = await slider.boundingBox();
+  await page.mouse.move(sb.x + sb.width * 0.5, sb.y + sb.height / 2); await page.mouse.down(); await page.waitForTimeout(300);
+  check('the red overlay disappears while a slider is being dragged', !reddish(await px(0.5, 0.3)));
+  await page.mouse.move(sb.x + sb.width * 0.6, sb.y + sb.height / 2, { steps: 4 }); await page.waitForTimeout(200);
+  check('…and stays away for the whole drag', !reddish(await px(0.5, 0.3)));
+  await page.mouse.up(); await page.waitForTimeout(400);
+  const red = (p) => p[0] - p[2];
+  const rOn = red(await px(0.5, 0.3)); // released: the switch is still on, so the overlay should be back
+  await page.keyboard.press('o'); await page.waitForTimeout(400);
+  const rOff = red(await px(0.5, 0.3));
+  check('…then comes back when you let go (the switch is still on)', rOn > rOff + 30, `redness ${rOn} vs overlay off ${rOff}`);
+  check('the O key toggles the overlay off', !(await page.getByLabel('Show overlay').isChecked()));
+  const hdl = await box('[data-handle=center]'); await page.mouse.move(hdl.x + hdl.width / 2, hdl.y + hdl.height / 2); await page.mouse.down(); await page.waitForTimeout(300);
+  const rHeld = red(await px(0.5, 0.3));
+  check('dragging a mask handle shows the overlay while you hold it, even with the switch off', rHeld > rOff + 30, `held ${rHeld} vs ${rOff}`);
+  await page.mouse.up(); await page.waitForTimeout(400);
+  check('…and hides it again on release', red(await px(0.5, 0.3)) < rHeld - 30, `${red(await px(0.5, 0.3))}`);
+
+  const thumbData = () => page.locator('.mask-row.selected .mask-thumb').evaluate((c) => { const g = c.getContext('2d'); const d = g.getImageData(0, 0, c.width, c.height).data; let mn = 255, mx = 0, s = 0; for (let i = 0; i < d.length; i += 4) { mn = Math.min(mn, d[i]); mx = Math.max(mx, d[i]); s += d[i]; } return { mn, mx, s, w: c.width, h: c.height }; });
+  const t0 = await thumbData();
+  check('the mask list shows a real thumbnail of the mask (bright where it applies, dark elsewhere)', t0.mx > 200 && t0.mn < 20 && t0.w >= 40, JSON.stringify(t0));
+  check('the selected mask lists its shape, with Add and Subtract buttons (no grid of shape buttons)', (await page.locator('.mask-row.selected .comp-row').count()) === 1 && (await page.locator('[data-testid=menu-add]').count()) === 1 && (await page.locator('[data-testid=menu-subtract]').count()) === 1 && (await page.locator('.right button:has-text("Luminance")').count()) === 0);
+  await page.locator('[data-testid=menu-subtract]').click(); await page.locator('[data-add="subtract:linear"]').click(); await page.waitForTimeout(500);
+  const t1 = await thumbData();
+  check('subtracting a shape adds a row and the thumbnail updates', (await page.locator('.mask-row.selected .comp-row').count()) === 2 && t1.s < t0.s, `${t0.s} -> ${t1.s}`);
+  await page.locator('.mask-row.selected .mask-name').dblclick(); await page.locator('input[aria-label="Mask name"]').fill('Sky glow'); await page.keyboard.press('Enter'); await page.waitForTimeout(200);
+  check('double-click renames a mask', (await page.locator('.mask-row.selected .mask-name').innerText()) === 'Sky glow');
+  await page.locator('[data-mask].selected [aria-label="Mask options"]').click(); await page.getByRole('menuitem', { name: 'Delete mask' }).click(); await page.waitForTimeout(300);
+  check('a mask can be deleted from its ⋯ menu', (await page.locator('.mask-list li').count()) === 0);
+  await page.locator('[data-tool=edit]').click();
+
+  // ======================================================================= Presets tool
+  await page.locator('[data-tool=presets]').click(); await page.waitForTimeout(800);
+  check('Presets is a tool in the strip (first icon) and shows Presets | Yours tabs', (await page.locator('[data-tool=presets].on').count()) === 1 && (await page.locator('[data-preset-tab]').count()) === 2 && (await histVisible()));
+  const groupsP = await page.locator('[data-preset-group]').evaluateAll((e) => e.map((x) => x.getAttribute('data-preset-group')));
+  check('built-in presets are grouped (Color, Black & White, Film & Mood, Detail)', groupsP.join('|') === 'Color|Black & White|Film & Mood|Detail', groupsP.join('|'));
+  check('every preset has a preview thumbnail', (await page.locator('.preset-card canvas').count()) === 18);
+  const cardStats = () => page.locator('.preset-card canvas').evaluateAll((cs) => cs.map((c) => { if (!c.width) return null; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let r = 0, g = 0, b = 0, n = 0; for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; } return [r / n, g / n, b / n]; }));
+  await page.waitForTimeout(1500);
+  const cs = await cardStats();
+  check('previews are actually rendered (none blank)', cs.every((c) => c && c[0] + c[1] + c[2] > 30), `${cs.filter((c) => !c).length} blank`);
+  const names = await page.locator('[data-preset]').evaluateAll((e) => e.map((x) => x.getAttribute('data-preset')));
+  const ni = names.indexOf('Neutral'), vi = names.indexOf('Vivid');
+  check('…and show each preset applied to YOUR photo (Neutral is grey, Vivid is more colourful than Neutral)', Math.max(...cs[ni]) - Math.min(...cs[ni]) < 6 && Math.max(...cs[vi]) - Math.min(...cs[vi]) > Math.max(...cs[ni]) - Math.min(...cs[ni]) + 15, `neutral ${cs[ni].map(Math.round)} vivid ${cs[vi].map(Math.round)}`);
+  const hBefore = await page.locator('.history-list li').count();
+  await page.locator('[data-preset="Vivid"] .preset-card').click(); await page.waitForTimeout(500);
+  check('clicking a preview applies the preset as ONE history step', (await page.locator('.history-list li').count()) === hBefore + 1 && (await page.locator('.history-list li').first().innerText()) === 'Preset: Vivid');
+  await page.keyboard.press('Control+z'); await page.waitForTimeout(300);
+
+  await page.locator('[data-preset-tab=yours]').click(); await page.waitForTimeout(300);
+  check('Yours starts empty, with hints', (await page.locator('[data-testid=no-favorites]').count()) === 1 && (await page.locator('[data-testid=no-mine]').count()) === 1);
+  await page.locator('[data-preset-tab=presets]').click();
+  await page.locator('[data-preset="Vivid"]').hover(); await page.locator('[data-preset="Vivid"] .preset-fav').click();
+  await page.locator('[data-preset="Matte"]').hover(); await page.locator('[data-preset="Matte"] .preset-fav').click();
+  check('the star favourites a preset (and stays lit)', (await page.locator('[data-preset="Vivid"]').getAttribute('data-favorite')) === '1');
+  await page.locator('[data-preset-tab=yours]').click(); await page.waitForTimeout(300);
+  const favNames = await page.locator('[data-preset-group="Favorites"] [data-preset]').evaluateAll((e) => e.map((x) => x.getAttribute('data-preset')));
+  check('Yours > Favorites lists the starred presets', favNames.sort().join('|') === 'Matte|Vivid', favNames.join('|'));
+  await page.locator('[data-testid=save-preset-btn]').click(); await page.locator('input[aria-label="Preset name"]').fill('My warm look'); await page.locator('[data-testid=preset-save]').click(); await page.waitForTimeout(800);
+  const mineNames = await page.locator('[data-preset-group="My presets"] [data-preset]').evaluateAll((e) => e.map((x) => x.getAttribute('data-preset')));
+  check('presets you make appear under Yours > My presets, with a preview', mineNames.join() === 'My warm look' && (await page.locator('[data-preset-group="My presets"] canvas').count()) === 1, mineNames.join());
+  await page.locator('[data-preset="My warm look"]').hover(); await page.locator('[data-preset="My warm look"] .preset-fav').click();
+  await page.waitForTimeout(500); await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(900);
+  await page.locator('[data-tool=presets]').click(); await page.locator('[data-preset-tab=yours]').click(); await page.waitForTimeout(600);
+  const favAfter = await page.locator('[data-preset-group="Favorites"] [data-preset]').evaluateAll((e) => e.map((x) => x.getAttribute('data-preset')));
+  check('favourites and your presets survive a reload', favAfter.sort().join('|') === 'Matte|My warm look|Vivid' && (await page.locator('[data-preset-group="My presets"] [data-preset]').count()) === 1, favAfter.join('|'));
+  await page.locator('[data-preset-group="Favorites"] [data-preset="Matte"]').hover(); await page.locator('[data-preset-group="Favorites"] [data-preset="Matte"] .preset-fav').click(); await page.waitForTimeout(300);
+  check('un-starring removes it from Favorites', (await page.locator('[data-preset-group="Favorites"] [data-preset="Matte"]').count()) === 0);
+  page.once('dialog', (d) => d.accept());
+  await page.locator('[data-preset-group="My presets"] [data-preset="My warm look"]').hover(); await page.locator('[data-preset="My warm look"] .preset-del').first().click(); await page.waitForTimeout(400);
+  check('a preset of yours can be deleted', (await page.locator('[data-preset="My warm look"]').count()) === 0);
+  await page.locator('[data-tool=edit]').click();
 
   // ======================================================================= Library view
   await page.locator('[data-mode=library]').click(); await page.waitForTimeout(400);
