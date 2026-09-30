@@ -81,10 +81,11 @@ export function resetSection(h: EditHistory, section: SectionId): EditHistory {
   const label = `Reset ${SECTIONS.find((s) => s.id === section)!.label}`;
   if (section === 'curve') return resetCurve(h, 'all');
   if (section === 'crop') return applyEdit(h, resetCropTool, label);
+  if (section === 'retouch') return applyEdit(h, (p) => ({ ...p, spots: [] }), label);
   if (section === 'lens') return applyEdit(h, (p) => ({ ...p, ...Object.fromEntries(keysOfSection('lens').map((k) => [k, DEFAULT_PARAMS[k]])), lensProfile: NO_PROFILE }), label);
   return resetKeys(h, keysOfSection(section), label);
 }
 
 export function resetAll(h: EditHistory): EditHistory {
-  return apply(h, { ...DEFAULT_PARAMS, curves: defaultCurves(), crop: fullCrop(), masks: [] }, 'Reset All', paramsEqual);
+  return apply(h, { ...DEFAULT_PARAMS, curves: defaultCurves(), crop: fullCrop(), masks: [], spots: [] }, 'Reset All', paramsEqual);
 }

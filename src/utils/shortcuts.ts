@@ -21,10 +21,12 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'tool-edit', label: 'Edit tool', keys: ['e'], run: () => store.setTool('edit') },
   { id: 'tool-crop', label: 'Crop tool', keys: ['c'], run: () => store.setTool('crop') },
   { id: 'tool-mask', label: 'Masking tool', keys: ['m'], run: () => store.setTool('mask') },
+  { id: 'tool-retouch', label: 'Retouch tool', keys: ['q'], run: () => store.setTool('retouch') },
+  { id: 'delete-spot', label: 'Delete selected spot', keys: ['delete', 'backspace'], run: () => { const s = store.getState(); if (s.tool === 'retouch' && s.selectedSpot) store.removeSpot(s.selectedSpot); } },
   { id: 'mask-brush', label: 'New brush mask', keys: ['b'], run: () => store.getState().tool === 'mask' && store.createMask('brush') },
   { id: 'mask-linear', label: 'New linear gradient', keys: ['l'], run: () => store.getState().tool === 'mask' && store.createMask('linear') },
   { id: 'mask-radial', label: 'New radial gradient', keys: ['r'], run: () => store.getState().tool === 'mask' && store.createMask('radial') },
-  { id: 'done', label: 'Leave crop / masking', keys: ['escape'], run: () => store.getState().tool !== 'edit' && store.setTool('edit') },
+  { id: 'done', label: 'Leave crop / masking / retouch', keys: ['escape'], run: () => store.getState().tool !== 'edit' && store.setTool('edit') },
   { id: 'next', label: 'Next photo', keys: ['arrowright'], run: () => step(1) },
   { id: 'prev', label: 'Previous photo', keys: ['arrowleft'], run: () => step(-1) },
 ];

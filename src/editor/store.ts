@@ -26,6 +26,10 @@ import { linearToOklab } from '../image-engine/oklab';
 import { srgbToLinear } from '../color/colorSpace';
 import { decodeFile } from '../import/decoders';
 import { makeThumbnail } from '../library/thumbnail';
+import { findSource } from '../retouch/apply';
+import * as SpotOps from '../retouch/ops';
+import { readPixels, retouchedPixels, type Pixels } from '../retouch/source';
+import { SPOT_KIND_LABEL, newSpot, type Spot, type SpotKind } from '../retouch/types';
 import { EDIT_SCHEMA_VERSION, IndexedDbPhotoStore, type PhotoRecord, type PhotoStore } from '../storage/db';
 
 /** Long edge of the working preview. Full-resolution rendering is an export-phase concern. */
@@ -44,9 +48,18 @@ export interface LoadedImage {
   photoId: string;
   bitmap: ImageBitmap;
   analysis: AnalysisImage;
+  /** RGBA8 of the decoded original (input to retouching). Never modified. */
+  pixels: Pixels;
 }
 
-export type Tool = 'edit' | 'crop' | 'mask';
+export type Tool = 'edit' | 'crop' | 'mask' | 'retouch';
+
+export interface RetouchSettings {
+  kind: SpotKind;
+  size: number; // 1..100
+  feather: number; // 0..100
+  opacity: number; // 1..100
+}
 
 export interface BrushSettings {
   size: number; // 1..100
@@ -62,6 +75,8 @@ export interface EditorState {
   tool: Tool;
   selectedMask: string | null;
   selectedComp: string | null;
+  selectedSpot: string | null;
+  retouch: RetouchSettings;
   brush: BrushSettings;
   showOverlay: boolean;
   pickingColor: boolean;
@@ -84,6 +99,8 @@ const initial: EditorState = {
   tool: 'edit',
   selectedMask: null,
   selectedComp: null,
+  selectedSpot: null,
+  retouch: { kind: 'heal', size: 30, feather: 40, opacity: 100 },
   brush: { size: 40, feather: 50, flow: 100, density: 100, erase: false },
   showOverlay: true,
   pickingColor: false,
@@ -227,10 +244,11 @@ export class EditorStore {
         this.histories.set(id, h);
       }
       const analysis = makeAnalysisImage(dec.bitmap);
+      const pixels = readPixels(dec.bitmap);
       this.state.image?.bitmap.close();
       this.set({
         currentId: id,
-        image: { photoId: id, bitmap: dec.bitmap, analysis },
+        image: { photoId: id, bitmap: dec.bitmap, analysis, pixels },
         history: h,
         params: present(h),
         canUndo: canUndo(h),
@@ -241,6 +259,7 @@ export class EditorStore {
         tool: 'edit',
         selectedMask: null,
         selectedComp: null,
+        selectedSpot: null,
         pickingColor: false,
       });
       void this.db.setMeta('lastPhotoId', id);
@@ -418,6 +437,65 @@ export class EditorStore {
     this.previewShape(m, c, (s) => (s.type === 'color' ? { ...s, L, a: A, b: B } : s));
     this.commitShape('Pick Mask Color');
     this.set({ pickingColor: false });
+  };
+
+
+  // ---------------------------------------------------------------- retouch (clone / heal / remove)
+  private spotsEdit(fn: (s: Spot[]) => Spot[], label: string) { this.applyParamsEdit((p) => ({ ...p, spots: fn(p.spots) }), label); }
+  setRetouch = (patch: Partial<RetouchSettings>) => {
+    this.set({ retouch: { ...this.state.retouch, ...patch } });
+    // changing the mode / size controls of a selected spot edits that spot
+    const sel = this.state.selectedSpot;
+    if (sel && (patch.kind || patch.size !== undefined || patch.feather !== undefined || patch.opacity !== undefined)) {
+      const r = this.state.retouch;
+      this.previewSpot(sel, (s) => ({ ...s, kind: r.kind, r: SpotOps.spotRadius(r.size), feather: r.feather / 100, opacity: r.opacity / 100 }));
+      this.commitSpot(patch.kind ? `Spot: ${SPOT_KIND_LABEL[r.kind]}` : 'Adjust Spot', !patch.kind);
+    }
+  };
+  previewRetouchControl = (key: 'size' | 'feather' | 'opacity', v: number) => {
+    const r = { ...this.state.retouch, [key]: v };
+    this.set({ retouch: r });
+    const sel = this.state.selectedSpot;
+    if (sel) this.previewSpot(sel, (s) => ({ ...s, r: SpotOps.spotRadius(r.size), feather: r.feather / 100, opacity: r.opacity / 100 }));
+  };
+  commitRetouchControl = () => { if (this.state.selectedSpot) this.commitSpot('Adjust Spot'); };
+  selectSpot = (id: string | null) => {
+    const sp = this.state.params.spots.find((x) => x.id === id);
+    if (sp) this.set({ selectedSpot: sp.id, retouch: { kind: sp.kind, size: SpotOps.sizeOfRadius(sp.r), feather: Math.round(sp.feather * 100), opacity: Math.round(sp.opacity * 100) } });
+    else this.set({ selectedSpot: null });
+  };
+  /** Source centre (mask space) for a new spot at (x, y): the best-matching nearby patch, else a fixed offset. */
+  private suggestSource(x: number, y: number, r: number): { sx: number; sy: number } {
+    const img = this.state.image;
+    if (!img) return { sx: x + r * 3, sy: y };
+    const { width: w, height: h } = img.pixels, L = Math.max(w, h);
+    const f = findSource({ data: img.pixels.data, w, h }, w / 2 + x * L, h / 2 + y * L, Math.max(0.75, r * L));
+    if (f) return { sx: (f.x - w / 2) / L, sy: (f.y - h / 2) / L };
+    const sx = x + r * 3.2, hw = w / L / 2;
+    return { sx: sx > hw ? x - r * 3.2 : sx, sy: y };
+  }
+  /** Click-to-add. (x, y) in mask space. */
+  addSpotAt = (x: number, y: number) => {
+    const why = SpotOps.limitReason(this.state.params.spots);
+    if (why) return this.toast(why);
+    const r = this.state.retouch;
+    const radius = SpotOps.spotRadius(r.size);
+    const spot = newSpot(r.kind, x, y, radius, this.suggestSource(x, y, radius), r.feather / 100, r.opacity / 100);
+    this.spotsEdit((s) => SpotOps.addSpot(s, spot), `Add ${SPOT_KIND_LABEL[r.kind]} Spot`);
+    this.set({ selectedSpot: spot.id });
+  };
+  previewSpot = (id: string, fn: (s: Spot) => Spot) => { const h = this.h(); if (h) this.setHistory(previewEdit(h, (p) => ({ ...p, spots: SpotOps.updateSpot(p.spots, id, fn) })), false); };
+  commitSpot = (label: string, coalesce = false) => { const h = this.h(); if (h) this.setHistory(commitLabel(h, label, coalesce ? `spot:${label}` : undefined)); };
+  setSpotEnabled = (id: string, enabled: boolean) => this.spotsEdit((s) => SpotOps.updateSpot(s, id, (x) => ({ ...x, enabled })), enabled ? 'Enable Spot' : 'Disable Spot');
+  removeSpot = (id: string) => {
+    this.spotsEdit((s) => SpotOps.removeSpot(s, id), 'Delete Spot');
+    if (this.state.selectedSpot === id) this.set({ selectedSpot: null });
+  };
+  clearSpots = () => { this.spotsEdit(() => [], 'Clear Spots'); this.set({ selectedSpot: null }); };
+  /** Where each spot's pixels come from right now (auto-found for Remove). For the overlay. */
+  spotSources = () => {
+    const img = this.state.image;
+    return img ? retouchedPixels(img.pixels, this.state.params.spots).resolved : new Map();
   };
 
   toggleOriginal = (v?: boolean) => this.set({ showOriginal: v ?? !this.state.showOriginal });

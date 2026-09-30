@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CropPanel } from './editor/CropPanel';
 import { EditPanels } from './editor/EditPanels';
 import { MaskPanel } from './editor/MaskPanel';
+import { RetouchPanel } from './editor/RetouchPanel';
 import { Filmstrip } from './editor/Filmstrip';
 import { Histogram } from './editor/Histogram';
 import { HistoryPanel } from './editor/HistoryPanel';
@@ -46,7 +47,7 @@ export default function App() {
         <button onClick={() => fileRef.current?.click()}>Import…</button>
         <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,.avif,.gif,.bmp,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.tif,.tiff,.heic,.heif" onChange={(e) => { onFiles(e.target.files); e.target.value = ''; }} />
         <div className="tools" role="tablist" aria-label="Tools">
-          {([['edit', 'Edit', 'E'], ['crop', 'Crop', 'C'], ['mask', 'Masking', 'M']] as const).map(([id, label, key]) => (
+          {([['edit', 'Edit', 'E'], ['crop', 'Crop', 'C'], ['mask', 'Masking', 'M'], ['retouch', 'Retouch', 'Q']] as const).map(([id, label, key]) => (
             <button key={id} role="tab" aria-selected={tool === id} data-tool={id} className={tool === id ? 'on' : ''} disabled={!current} onClick={() => store.setTool(id)} title={`${label} (${key})`}>{label}</button>
           ))}
         </div>
@@ -88,6 +89,7 @@ export default function App() {
           {!current ? <div className="muted small pad">Import or select a photo to start editing.</div>
             : tool === 'crop' ? <CropPanel />
             : tool === 'mask' ? <MaskPanel />
+            : tool === 'retouch' ? <RetouchPanel />
             : <EditPanels />}
         </div>
       </aside>

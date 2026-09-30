@@ -5,6 +5,8 @@ import { computeHistogram } from '../image-engine/histogram';
 import { WebGLRenderer } from '../image-engine/webglRenderer';
 import { CropOverlay } from './CropOverlay';
 import { MaskOverlay } from './MaskOverlay';
+import { RetouchOverlay } from './RetouchOverlay';
+import { retouchedPixels } from '../retouch/source';
 import { publishHistogram } from './histogramStore';
 import { store, useEditor } from './store';
 
@@ -58,16 +60,22 @@ export function Viewer() {
   const cssW = Math.floor(Math.min(aw, ah * ar));
   const cssH = Math.floor(cssW / ar);
 
+  // The renderer reads the original with retouch spots applied (a derived cache; the original is untouched).
+  // "Before" shows the genuine original.
+  const retouched = useMemo(() => (image && !showOriginal && params.spots.length ? retouchedPixels(image.pixels, params.spots) : null), [image, showOriginal, params.spots]);
+  const sourceKey = retouched?.changed ? retouched.data : null;
+
   useEffect(() => {
     if (!image) return;
     try {
       rendererRef.current ??= new WebGLRenderer(canvasRef.current!);
-      rendererRef.current.setImage(image.bitmap);
+      if (retouched?.changed) rendererRef.current.setImage(new ImageData(retouched.data as Uint8ClampedArray<ArrayBuffer>, image.pixels.width, image.pixels.height));
+      else rendererRef.current.setImage(image.bitmap);
       if (!rendererRef.current.supportsLocal) setNote('This GPU cannot render to float textures: Texture, Clarity and Dehaze are disabled.');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [image]);
+  }, [image, sourceKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => { rendererRef.current?.dispose(); rendererRef.current = null; }, []);
 
@@ -88,7 +96,7 @@ export function Viewer() {
       publishHistogram(computeHistogram(rb.data));
     });
     return () => cancelAnimationFrame(frame.current);
-  }, [image, renderParams, showClipping, cssW, cssH, overlayIndex]);
+  }, [image, sourceKey, renderParams, showClipping, cssW, cssH, overlayIndex]);
 
   useEffect(() => { if (!image) publishHistogram(null); }, [image]);
 
@@ -112,6 +120,7 @@ export function Viewer() {
           data-testid="viewer-canvas"
         />
         {image && tool === 'crop' && !showOriginal && <CropOverlay width={cssW} height={cssH} />}
+        {image && tool === 'retouch' && !showOriginal && <RetouchOverlay width={cssW} height={cssH} geo={geo} />}
         {image && tool === 'mask' && !showOriginal && <MaskOverlay width={cssW} height={cssH} geo={geo} srcW={bw} srcH={bh} />}
       </div>
       {showOriginal && image && <div className="badge">Original</div>}

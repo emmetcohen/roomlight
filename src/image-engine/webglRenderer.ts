@@ -133,7 +133,7 @@ export class WebGLRenderer {
   }
 
   /** Upload the original image. Decoded 8-bit sRGB is interpreted by the GPU as sRGB. */
-  setImage(source: ImageBitmap | HTMLCanvasElement | OffscreenCanvas): void {
+  setImage(source: ImageBitmap | HTMLCanvasElement | OffscreenCanvas | ImageData): void {
     const gl = this.gl;
     if (this.tex) gl.deleteTexture(this.tex);
     const tex = gl.createTexture()!;
@@ -147,7 +147,7 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     this.tex = tex;
-    this.imageSize = { width: (source as ImageBitmap).width, height: (source as ImageBitmap).height };
+    this.imageSize = { width: source.width, height: source.height };
   }
 
   private uploadLut(lut: Float32Array) {

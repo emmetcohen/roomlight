@@ -148,3 +148,4 @@ kbd { font: 10px ui-monospace, monospace; background: var(--bg-3); border: 1px s
 .color-target { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .swatch.big { width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--line); margin: 0; }
 .lum-bar { height: 10px; border-radius: 3px; border: 1px solid var(--line); margin: 2px 0 6px; }
 button.tool.on { border-color: var(--accent); color: var(--accent); }
+.note.warn { color: #ffb13d; }

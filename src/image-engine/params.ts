@@ -12,6 +12,7 @@ import { oklchToCss } from '../color/oklchCss';
 import { curvesAreIdentity, curvesEqual, defaultCurves, normalizeCurves, type ToneCurves } from './curves';
 import { fullCrop, normalizeCrop, type Crop } from '../geometry/crop';
 import { normalizeMasks, type Mask } from '../masks/types';
+import { normalizeSpots, type Spot } from '../retouch/types';
 import { deepEqual } from '../utils/deepEqual';
 
 export const MIX_COLORS = ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'magenta'] as const;
@@ -84,11 +85,13 @@ export interface EditParams extends ScalarParams {
   masks: Mask[];
   /** Selected lens profile id ('none' = manual only). */
   lensProfile: string;
+  /** Clone / heal / remove spots, applied to the source pixels before everything else. */
+  spots: Spot[];
 }
 
 export type SectionId =
   | 'whiteBalance' | 'tone' | 'presence' | 'color'
-  | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'crop' | 'geometry' | 'lens';
+  | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'crop' | 'geometry' | 'lens' | 'retouch';
 
 export interface SliderDef {
   key: ParamKey;
@@ -121,6 +124,7 @@ export const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'crop', label: 'Crop' },
   { id: 'geometry', label: 'Geometry' },
   { id: 'lens', label: 'Lens Corrections' },
+  { id: 'retouch', label: 'Retouch' },
 ];
 
 /** Display colours for the eight mixer bands (also used for slider tracks). */
@@ -214,6 +218,7 @@ export const DEFAULT_PARAMS: EditParams = Object.freeze({
   crop: fullCrop(),
   masks: [] as Mask[],
   lensProfile: 'none',
+  spots: [] as Spot[],
 }) as EditParams;
 
 export function clampParam(key: ParamKey, value: number): number {
@@ -227,7 +232,7 @@ export function clampParam(key: ParamKey, value: number): number {
  * value is clamped/validated, so edits saved by older or newer versions load safely.
  */
 export function normalizeParams(partial: Partial<Record<string, unknown>> | undefined | null): EditParams {
-  const out = { ...DEFAULT_PARAMS, curves: defaultCurves(), crop: fullCrop(), masks: [] } as EditParams;
+  const out = { ...DEFAULT_PARAMS, curves: defaultCurves(), crop: fullCrop(), masks: [], spots: [] } as EditParams;
   if (!partial) return out;
   for (const d of SLIDERS) {
     const v = partial[d.key];
@@ -237,13 +242,14 @@ export function normalizeParams(partial: Partial<Record<string, unknown>> | unde
   out.crop = normalizeCrop(partial.crop);
   out.masks = normalizeMasks(partial.masks);
   out.lensProfile = typeof partial.lensProfile === 'string' ? partial.lensProfile : 'none';
+  out.spots = normalizeSpots(partial.spots);
   return out;
 }
 
 export function paramsEqual(a: EditParams, b: EditParams): boolean {
   if (a === b) return true;
   for (const d of SLIDERS) if (a[d.key] !== b[d.key]) return false;
-  return curvesEqual(a.curves, b.curves) && a.lensProfile === b.lensProfile && deepEqual(a.crop, b.crop) && deepEqual(a.masks, b.masks);
+  return curvesEqual(a.curves, b.curves) && a.lensProfile === b.lensProfile && deepEqual(a.crop, b.crop) && deepEqual(a.masks, b.masks) && deepEqual(a.spots, b.spots);
 }
 
 /** True if every scalar (optionally just `keys`) is at its default — and curves too when no keys given. */
@@ -252,7 +258,7 @@ export function isDefault(params: EditParams, keys?: ParamKey[]): boolean {
     if (keys && !keys.includes(d.key)) continue;
     if (params[d.key] !== d.default) return false;
   }
-  return keys ? true : curvesAreIdentity(params.curves) && deepEqual(params.crop, fullCrop()) && params.masks.length === 0 && params.lensProfile === 'none';
+  return keys ? true : curvesAreIdentity(params.curves) && deepEqual(params.crop, fullCrop()) && params.masks.length === 0 && params.spots.length === 0 && params.lensProfile === 'none';
 }
 
 export function keysOfSection(section: SectionId): ParamKey[] {
