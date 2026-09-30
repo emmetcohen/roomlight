@@ -37,8 +37,11 @@ export const RATIO_FLOOR = 1e-3;
  * unit-white pixel is unchanged — white balance shifts colour, not brightness.
  */
 export function wbMultipliers(temperature: number, tint: number): Vec3 {
-  const t = temperature / 100;
-  const s = tint / 100;
+  return wbMultipliersN(temperature / 100, tint / 100);
+}
+
+/** Same, with temperature/tint already normalised to [-1, 1] (used by local adjustments, which scale them by the mask). */
+export function wbMultipliersN(t: number, s: number): Vec3 {
   const raw: Vec3 = [Math.pow(2, TEMP_STOPS * t), Math.pow(2, -TINT_STOPS * s), Math.pow(2, -TEMP_STOPS * t)];
   const y = luminance(raw);
   return [raw[0] / y, raw[1] / y, raw[2] / y];
@@ -117,12 +120,17 @@ export function contrastCurve(v: number, m: number): number {
  * regional displacements weighted by the *post-contrast* value.
  */
 export function toneCurve(v: number, p: Pick<EditParams, 'contrast' | 'highlights' | 'shadows' | 'whites' | 'blacks'>): number {
-  const vc = contrastCurve(v, contrastShape(p.contrast));
+  return toneCurveT(v, contrastShape(p.contrast), [p.shadows / 100, p.highlights / 100, p.whites / 100, p.blacks / 100]);
+}
+
+/** Tone curve from a contrast shape and normalised [shadows, highlights, whites, blacks]. */
+export function toneCurveT(v: number, cs: number, t: [number, number, number, number]): number {
+  const vc = contrastCurve(v, cs);
   const d =
-    TONE_GAIN.shadows * (p.shadows / 100) * toneWeight(vc, 'shadows') +
-    TONE_GAIN.highlights * (p.highlights / 100) * toneWeight(vc, 'highlights') +
-    TONE_GAIN.whites * (p.whites / 100) * toneWeight(vc, 'whites') +
-    TONE_GAIN.blacks * (p.blacks / 100) * toneWeight(vc, 'blacks');
+    TONE_GAIN.shadows * t[0] * toneWeight(vc, 'shadows') +
+    TONE_GAIN.highlights * t[1] * toneWeight(vc, 'highlights') +
+    TONE_GAIN.whites * t[2] * toneWeight(vc, 'whites') +
+    TONE_GAIN.blacks * t[3] * toneWeight(vc, 'blacks');
   return Math.max(vc + d, 0);
 }
 
@@ -134,9 +142,13 @@ export function toneCurve(v: number, p: Pick<EditParams, 'contrast' | 'highlight
  * pure black.
  */
 export function applyTone(c: Vec3, p: EditParams): Vec3 {
+  return applyToneT(c, contrastShape(p.contrast), [p.shadows / 100, p.highlights / 100, p.whites / 100, p.blacks / 100]);
+}
+
+export function applyToneT(c: Vec3, cs: number, t: [number, number, number, number]): Vec3 {
   const y = luminance(c);
   const v = linearToSrgb(y);
-  const v2 = toneCurve(v, p);
+  const v2 = toneCurveT(v, cs, t);
   const y2 = srgbToLinear(v2);
   const w = clamp(y / RATIO_FLOOR, 0, 1);
   const k = y2 / Math.max(y, 1e-6);
@@ -155,10 +167,15 @@ export function applyTone(c: Vec3, p: EditParams): Vec3 {
  * Vibrance therefore acts mostly on muted colours and leaves saturated ones alone.
  */
 export function applyColor(c: Vec3, p: EditParams): Vec3 {
+  return applyColorSV(c, p.saturation / 100, p.vibrance / 100);
+}
+
+/** Saturation and vibrance, both normalised to [-1, 1]. */
+export function applyColorSV(c: Vec3, sat: number, vib: number): Vec3 {
   const y = luminance(c);
   const mx = Math.max(c[0], c[1], c[2], 0);
   const mn = Math.max(Math.min(c[0], c[1], c[2]), 0);
   const chroma = clamp((mx - mn) / (mx + 1e-6), 0, 1);
-  const s = Math.max((1 + p.saturation / 100) * (1 + (p.vibrance / 100) * (1 - chroma)), 0);
+  const s = Math.max((1 + sat) * (1 + vib * (1 - chroma)), 0);
   return [y + (c[0] - y) * s, y + (c[1] - y) * s, y + (c[2] - y) * s];
 }

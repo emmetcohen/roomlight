@@ -1,6 +1,8 @@
 /** Dev-only page used by scripts/verify-gpu.mjs: GPU shader output vs the CPU reference. */
 import { DEFAULT_PARAMS, normalizeParams, type EditParams } from '../image-engine/params';
-import { renderImageData } from '../image-engine/pipeline';
+import { renderImage } from '../image-engine/pipeline';
+import { linearToOklab } from '../image-engine/oklab';
+import { srgbToLinear } from '../color/colorSpace';
 import { WebGLRenderer } from '../image-engine/webglRenderer';
 
 const W = 96, H = 72;
@@ -26,6 +28,20 @@ function makeSource(): Uint8ClampedArray {
   return px;
 }
 
+/** Cases may give a colour-range target as `labFrom: [r, g, b]` (0-255); resolve it to OKLab here. */
+function resolve(c: Record<string, unknown>): Record<string, unknown> {
+  const masks = c.masks as { components: { shape: Record<string, unknown> }[] }[] | undefined;
+  if (!masks) return c;
+  for (const m of masks) for (const comp of m.components) {
+    const from = comp.shape.labFrom as number[] | undefined;
+    if (from) {
+      const [L, a, b] = linearToOklab([srgbToLinear(from[0] / 255), srgbToLinear(from[1] / 255), srgbToLinear(from[2] / 255)]);
+      Object.assign(comp.shape, { L, a, b });
+    }
+  }
+  return c;
+}
+
 (window as unknown as Record<string, unknown>).runParity = (cases: Record<string, unknown>[]) => {
   const src = makeSource();
   const canvas = document.createElement('canvas');
@@ -33,16 +49,27 @@ function makeSource(): Uint8ClampedArray {
   canvas.getContext('2d')!.putImageData(new ImageData(src as Uint8ClampedArray<ArrayBuffer>, W, H), 0, 0);
   const gl = new WebGLRenderer(document.getElementById('c') as HTMLCanvasElement);
   gl.setImage(canvas);
-  return cases.map((c) => {
+  gl.useMipmaps(false);
+  const base = renderImage(src, W, H, DEFAULT_PARAMS);
+  return cases.map((raw) => {
+    const c = resolve(JSON.parse(JSON.stringify(raw)));
     const p: EditParams = normalizeParams({ ...DEFAULT_PARAMS, ...c });
-    const cpu = renderImageData(src, W, H, p);
+    const cpu = renderImage(src, W, H, p);
     const rb = gl.readback(p, 256);
+    const sameSize = cpu.width === rb.width && cpu.height === rb.height;
     let max = 0, sum = 0, big = 0, effect = 0;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const g = ((H - 1 - y) * W + x) * 4; // GL readback is bottom-up
-      const s = (y * W + x) * 4;
-      for (let k = 0; k < 3; k++) { effect += Math.abs(cpu[s + k] - src[s + k]); const d = Math.abs(rb.data[g + k] - cpu[s + k]); max = Math.max(max, d); sum += d; if (d > 2) big++; }
-    }
-    return { params: c, maxDiff: max, meanDiff: sum / (W * H * 3), effect: effect / (W * H * 3), pixelsOver2: big, size: [rb.width, rb.height], localSupported: gl.supportsLocal };
+    if (sameSize) for (let y = 0; y < cpu.height; y++) for (let x = 0; x < cpu.width; x++) {
+      const g = ((cpu.height - 1 - y) * cpu.width + x) * 4; // GL readback is bottom-up
+      const s = (y * cpu.width + x) * 4;
+      for (let k = 0; k < 4; k++) {
+        if (cpu.width === W && cpu.height === H) effect += Math.abs(cpu.data[s + k] - base.data[s + k]);
+        const d = Math.abs(rb.data[g + k] - cpu.data[s + k]); max = Math.max(max, d); sum += d; if (d > 2) big++;
+      }
+    } else { max = 255; }
+    if (cpu.width !== W || cpu.height !== H) effect = 99; // a crop changes the image by definition
+    return {
+      params: raw, maxDiff: max, meanDiff: sum / (cpu.width * cpu.height * 4), effect: cpu.width === W && cpu.height === H ? effect / (W * H * 4) : effect,
+      pixelsOver2: big, size: [rb.width, rb.height], cpuSize: [cpu.width, cpu.height], localSupported: gl.supportsLocal,
+    };
   });
 };

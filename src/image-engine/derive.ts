@@ -10,8 +10,11 @@ import { GRADE_CHROMA, GRADE_LUM_GAIN } from './adjustments';
 import { contrastShape, exposureGain, wbMultipliers } from './model';
 import { GRADE_RANGES, MIX_COLORS, type EditParams } from './params';
 import type { Vec3 } from '../color/colorSpace';
+import { makeGeoMap, type GeoMap } from '../geometry/transform';
+import { LENS_CA_SHIFT, LENS_DISTORTION_K, effectiveLens } from '../lens/profiles';
+import { flattenMasks, type MaskTables } from '../masks/evaluate';
 
-export type StageId = 'whiteBalance' | 'exposure' | 'tone' | 'local' | 'curve' | 'mixer' | 'grading' | 'color' | 'vignette' | 'grain';
+export type StageId = 'lens' | 'whiteBalance' | 'exposure' | 'tone' | 'local' | 'curve' | 'mixer' | 'grading' | 'color' | 'masks' | 'vignette' | 'grain';
 
 export interface BlurSpec {
   sigma: number; // in output pixels
@@ -31,10 +34,24 @@ export function blurPlan(w: number, h: number): [BlurSpec, BlurSpec, BlurSpec] {
   return [mk(Math.max(0.6, 0.0012 * L)), mk(Math.max(1.5, 0.01 * L)), mk(Math.max(3, 0.03 * L))];
 }
 
+export interface LensTables {
+  a: number; // radial distortion coefficient: rs = rc·(1 − a·rc²)
+  ca: number; // red/blue radial scale: red at rs·(1+ca), blue at rs·(1−ca)
+  vig: number; // vignetting correction, normalised [-1, 1]
+  R: number; // half-diagonal of the source, px
+}
+
 export interface Derived {
   p: EditParams;
-  w: number;
+  w: number; // output size
   h: number;
+  /** Decoded source size (px). Output and source differ when cropping or when the preview is scaled. */
+  src: { w: number; h: number };
+  geo: GeoMap;
+  lens: LensTables;
+  /** true when output pixels are not simply the source pixels (geometry, crop or lens distortion/CA). */
+  remap: boolean;
+  masks: MaskTables;
   active: Record<StageId, boolean>;
   wb: Vec3;
   expGain: number;
@@ -58,7 +75,7 @@ export function lutFor(p: EditParams): Float32Array {
   return l;
 }
 
-export function derive(p: EditParams, w: number, h: number): Derived {
+export function derive(p: EditParams, w: number, h: number, src: { w: number; h: number } = { w, h }): Derived {
   const mixer: MixerTables = { hue: [], sat: [], lum: [] };
   for (const c of MIX_COLORS) {
     mixer.hue.push(p[`mix_${c}_hue`] / 100);
@@ -79,11 +96,22 @@ export function derive(p: EditParams, w: number, h: number): Derived {
   }
   const L = Math.max(w, h);
   const local: LocalTables = { texture: p.texture / 100, clarity: p.clarity / 100, dehaze: p.dehaze / 100 };
+  const masks = flattenMasks(p.masks);
+  const eff = effectiveLens(p.lensProfile, { distortion: p.lensDistortion, vignetting: p.lensVignetting, chromaticAberration: p.lensCA });
+  const lens: LensTables = {
+    a: (eff.distortion / 100) * LENS_DISTORTION_K,
+    ca: (eff.chromaticAberration / 100) * LENS_CA_SHIFT,
+    vig: eff.vignetting / 100,
+    R: Math.hypot(src.w, src.h) / 2,
+  };
+  const geo = makeGeoMap(p, src.w, src.h);
   const active: Record<StageId, boolean> = {
+    lens: lens.vig !== 0,
+    masks: masks.a3.some((a) => a[1] === 1),
     whiteBalance: p.temperature !== 0 || p.tint !== 0,
     exposure: p.exposure !== 0,
     tone: p.contrast !== 0 || p.highlights !== 0 || p.shadows !== 0 || p.whites !== 0 || p.blacks !== 0,
-    local: local.texture !== 0 || local.clarity !== 0 || local.dehaze !== 0,
+    local: local.texture !== 0 || local.clarity !== 0 || local.dehaze !== 0 || masks.a3.some((a) => a[2] === 1),
     curve: !curvesAreIdentity(p.curves),
     mixer: [...mixer.hue, ...mixer.sat, ...mixer.lum].some((v) => v !== 0),
     grading: GRADE_RANGES.some((r) => p[`grade_${r}_sat`] !== 0 || p[`grade_${r}_lum`] !== 0),
@@ -92,7 +120,8 @@ export function derive(p: EditParams, w: number, h: number): Derived {
     grain: p.grainAmount !== 0,
   };
   return {
-    p, w, h, active,
+    p, w, h, src, geo, lens, masks, active,
+    remap: geo.active || lens.a !== 0 || lens.ca !== 0,
     wb: wbMultipliers(p.temperature, p.tint),
     expGain: exposureGain(p.exposure),
     contrastShape: contrastShape(p.contrast),

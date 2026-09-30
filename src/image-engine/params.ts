@@ -10,6 +10,9 @@
  */
 import { oklchToCss } from '../color/oklchCss';
 import { curvesAreIdentity, curvesEqual, defaultCurves, normalizeCurves, type ToneCurves } from './curves';
+import { fullCrop, normalizeCrop, type Crop } from '../geometry/crop';
+import { normalizeMasks, type Mask } from '../masks/types';
+import { deepEqual } from '../utils/deepEqual';
 
 export const MIX_COLORS = ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'magenta'] as const;
 export type MixColor = (typeof MIX_COLORS)[number];
@@ -51,6 +54,23 @@ interface BaseScalars {
   grainAmount: number;
   grainSize: number;
   grainRoughness: number;
+  // Crop angle and orientation
+  straighten: number; // degrees
+  orientation: number; // quarter turns clockwise, 0..3
+  flipH: number; // 0 | 1
+  flipV: number; // 0 | 1
+  // Geometry (Transform)
+  geoVertical: number;
+  geoHorizontal: number;
+  geoRotate: number; // degrees
+  geoAspect: number;
+  geoScale: number; // percent
+  geoOffsetX: number;
+  geoOffsetY: number;
+  // Lens corrections (added to the selected profile)
+  lensDistortion: number;
+  lensVignetting: number;
+  lensCA: number;
 }
 
 export type ScalarParams = BaseScalars & Record<MixKey, number> & Record<GradeKey, number>;
@@ -58,11 +78,17 @@ export type ParamKey = keyof ScalarParams;
 
 export interface EditParams extends ScalarParams {
   curves: ToneCurves;
+  /** Crop rectangle + aspect preset (normalised, canvas space). Non-destructive. */
+  crop: Crop;
+  /** Local adjustments. Each mask owns its components and adjustments. */
+  masks: Mask[];
+  /** Selected lens profile id ('none' = manual only). */
+  lensProfile: string;
 }
 
 export type SectionId =
   | 'whiteBalance' | 'tone' | 'presence' | 'color'
-  | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain';
+  | 'curve' | 'mixer' | 'grading' | 'vignette' | 'grain' | 'crop' | 'geometry' | 'lens';
 
 export interface SliderDef {
   key: ParamKey;
@@ -78,6 +104,8 @@ export interface SliderDef {
   track?: string;
   /** Unambiguous name for history entries, e.g. "Red Hue". */
   fullLabel: string;
+  /** Real parameter without a slider of its own (set by buttons). */
+  hidden?: boolean;
 }
 
 export const SECTIONS: { id: SectionId; label: string }[] = [
@@ -90,6 +118,9 @@ export const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'grading', label: 'Color Grading' },
   { id: 'vignette', label: 'Vignette' },
   { id: 'grain', label: 'Grain' },
+  { id: 'crop', label: 'Crop' },
+  { id: 'geometry', label: 'Geometry' },
+  { id: 'lens', label: 'Lens Corrections' },
 ];
 
 /** Display colours for the eight mixer bands (also used for slider tracks). */
@@ -100,8 +131,8 @@ export const MIX_SWATCH: Record<MixColor, string> = {
 
 const s = (
   key: ParamKey, label: string, section: SectionId, min: number, max: number, def = 0,
-  o: { step?: number; decimals?: number; signed?: boolean; track?: string; full?: string } = {},
-): SliderDef => ({ key, label, section, min, max, default: def, step: o.step ?? 1, decimals: o.decimals ?? 0, signed: o.signed ?? (min < 0), track: o.track, fullLabel: o.full ?? label });
+  o: { step?: number; decimals?: number; signed?: boolean; track?: string; full?: string; hidden?: boolean } = {},
+): SliderDef => ({ key, label, section, min, max, default: def, step: o.step ?? 1, decimals: o.decimals ?? 0, signed: o.signed ?? (min < 0), track: o.track, fullLabel: o.full ?? label, hidden: o.hidden });
 
 const mixerSliders = (): SliderDef[] =>
   MIX_COLORS.flatMap((c, i) => {
@@ -156,6 +187,23 @@ export const SLIDERS: SliderDef[] = [
   s('grainAmount', 'Amount', 'grain', 0, 100, 0, { signed: false, full: 'Grain Amount' }),
   s('grainSize', 'Size', 'grain', 0, 100, 25, { signed: false, full: 'Grain Size' }),
   s('grainRoughness', 'Roughness', 'grain', 0, 100, 50, { signed: false, full: 'Grain Roughness' }),
+
+  s('straighten', 'Straighten', 'crop', -45, 45, 0, { step: 0.01, decimals: 2, full: 'Straighten' }),
+  s('orientation', 'Orientation', 'crop', 0, 3, 0, { signed: false, hidden: true }),
+  s('flipH', 'Flip Horizontal', 'crop', 0, 1, 0, { signed: false, hidden: true }),
+  s('flipV', 'Flip Vertical', 'crop', 0, 1, 0, { signed: false, hidden: true }),
+
+  s('geoVertical', 'Vertical', 'geometry', -100, 100, 0, { full: 'Vertical Perspective' }),
+  s('geoHorizontal', 'Horizontal', 'geometry', -100, 100, 0, { full: 'Horizontal Perspective' }),
+  s('geoRotate', 'Rotate', 'geometry', -10, 10, 0, { step: 0.01, decimals: 2, full: 'Geometry Rotate' }),
+  s('geoAspect', 'Aspect', 'geometry', -100, 100, 0, { full: 'Geometry Aspect' }),
+  s('geoScale', 'Scale', 'geometry', 50, 150, 100, { signed: false, full: 'Geometry Scale' }),
+  s('geoOffsetX', 'X Offset', 'geometry', -100, 100, 0, { step: 0.1, decimals: 1, full: 'X Offset' }),
+  s('geoOffsetY', 'Y Offset', 'geometry', -100, 100, 0, { step: 0.1, decimals: 1, full: 'Y Offset' }),
+
+  s('lensDistortion', 'Distortion', 'lens', -100, 100, 0, { full: 'Lens Distortion' }),
+  s('lensVignetting', 'Vignetting', 'lens', -100, 100, 0, { full: 'Lens Vignetting' }),
+  s('lensCA', 'Chromatic Aberration', 'lens', -100, 100, 0, { full: 'Chromatic Aberration' }),
 ];
 
 export const SLIDER_BY_KEY = Object.fromEntries(SLIDERS.map((d) => [d.key, d])) as Record<ParamKey, SliderDef>;
@@ -163,6 +211,9 @@ export const SLIDER_BY_KEY = Object.fromEntries(SLIDERS.map((d) => [d.key, d])) 
 export const DEFAULT_PARAMS: EditParams = Object.freeze({
   ...(Object.fromEntries(SLIDERS.map((d) => [d.key, d.default])) as unknown as ScalarParams),
   curves: defaultCurves(),
+  crop: fullCrop(),
+  masks: [] as Mask[],
+  lensProfile: 'none',
 }) as EditParams;
 
 export function clampParam(key: ParamKey, value: number): number {
@@ -176,20 +227,23 @@ export function clampParam(key: ParamKey, value: number): number {
  * value is clamped/validated, so edits saved by older or newer versions load safely.
  */
 export function normalizeParams(partial: Partial<Record<string, unknown>> | undefined | null): EditParams {
-  const out = { ...DEFAULT_PARAMS, curves: defaultCurves() } as EditParams;
+  const out = { ...DEFAULT_PARAMS, curves: defaultCurves(), crop: fullCrop(), masks: [] } as EditParams;
   if (!partial) return out;
   for (const d of SLIDERS) {
     const v = partial[d.key];
     if (typeof v === 'number') (out as unknown as Record<string, number>)[d.key] = clampParam(d.key, v);
   }
   out.curves = normalizeCurves(partial.curves);
+  out.crop = normalizeCrop(partial.crop);
+  out.masks = normalizeMasks(partial.masks);
+  out.lensProfile = typeof partial.lensProfile === 'string' ? partial.lensProfile : 'none';
   return out;
 }
 
 export function paramsEqual(a: EditParams, b: EditParams): boolean {
   if (a === b) return true;
   for (const d of SLIDERS) if (a[d.key] !== b[d.key]) return false;
-  return curvesEqual(a.curves, b.curves);
+  return curvesEqual(a.curves, b.curves) && a.lensProfile === b.lensProfile && deepEqual(a.crop, b.crop) && deepEqual(a.masks, b.masks);
 }
 
 /** True if every scalar (optionally just `keys`) is at its default — and curves too when no keys given. */
@@ -198,7 +252,7 @@ export function isDefault(params: EditParams, keys?: ParamKey[]): boolean {
     if (keys && !keys.includes(d.key)) continue;
     if (params[d.key] !== d.default) return false;
   }
-  return keys ? true : curvesAreIdentity(params.curves);
+  return keys ? true : curvesAreIdentity(params.curves) && deepEqual(params.crop, fullCrop()) && params.masks.length === 0 && params.lensProfile === 'none';
 }
 
 export function keysOfSection(section: SectionId): ParamKey[] {

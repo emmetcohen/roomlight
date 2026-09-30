@@ -8,6 +8,11 @@ import { chromium } from 'playwright';
 const executablePath = process.env.CHROMIUM_PATH || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined);
 
 const TOLERANCE = 2; // 8-bit levels (GPU float/pow precision + sRGB texture decode)
+// helpers to build mask cases (plain JSON, resolved in the page)
+let n = 0;
+const C = (shape, op = 'add', invert = false) => ({ id: `c${n++}`, op, invert, shape });
+const M = (components, adjust, extra = {}) => ({ id: `m${n++}`, name: 'Mask', enabled: true, invert: false, amount: 100, components, adjust, ...extra });
+const STROKE = { radius: 0.09, feather: 0.6, flow: 0.8, density: 0.9, erase: false, points: [{ x: -0.3, y: -0.12, p: 1 }, { x: -0.1, y: 0.1, p: 1 }, { x: 0.15, y: 0.05, p: 1 }, { x: 0.3, y: -0.15, p: 1 }] };
 const curveS = [{ x: 0, y: 0 }, { x: 0.25, y: 0.18 }, { x: 0.5, y: 0.5 }, { x: 0.75, y: 0.84 }, { x: 1, y: 1 }];
 const cases = [
   {},
@@ -31,6 +36,35 @@ const cases = [
   { vignetteAmount: -60 }, { vignetteAmount: 50, vignetteMidpoint: 30, vignetteFeather: 80 },
   { vignetteAmount: -80, vignetteRoundness: 100, vignetteHighlights: 60 }, { vignetteAmount: -70, vignetteRoundness: -100 },
   { grainAmount: 50 }, { grainAmount: 80, grainSize: 60, grainRoughness: 10 }, { grainAmount: 60, grainSize: 5, grainRoughness: 100 },
+  // ---- Phase 3: geometry, crop, lens
+  { crop: { x: 0.2, y: 0.1, w: 0.6, h: 0.7 } },
+  { orientation: 1 }, { orientation: 2, flipH: 1 }, { flipV: 1, orientation: 3 },
+  { straighten: 4.5 }, { straighten: -12, geoScale: 130 },
+  { geoVertical: 30 }, { geoHorizontal: -25 }, { geoVertical: -20, geoHorizontal: 15, geoRotate: 3 },
+  { geoAspect: 40, geoScale: 120 }, { geoOffsetX: 12, geoOffsetY: -8, geoScale: 115 },
+  { crop: { x: 0.1, y: 0.15, w: 0.5, h: 0.55 }, straighten: 6, geoVertical: 18, orientation: 1 },
+  { lensDistortion: 60 }, { lensDistortion: -50 }, { lensVignetting: 70 }, { lensVignetting: -60 }, { lensCA: 80 },
+  { lensProfile: 'example-wide' }, { lensProfile: 'example-tele', lensDistortion: 20, lensCA: -30 },
+  { lensDistortion: 40, lensCA: 60, lensVignetting: 30, straighten: 3, crop: { x: 0.05, y: 0.05, w: 0.9, h: 0.9 } },
+  // ---- Phase 4: masks (mask space: long edge = 1, so this 96x72 image spans x +-0.5, y +-0.375)
+  { masks: [M([C({ type: 'linear', x1: 0, y1: -0.3, x2: 0, y2: 0.1, feather: 60 })], { exposure: -1.2 })] },
+  { masks: [M([C({ type: 'linear', x1: -0.4, y1: -0.2, x2: 0.4, y2: 0.25, feather: 10 })], { exposure: 0.8, saturation: -40 })] },
+  { masks: [M([C({ type: 'radial', cx: 0.05, cy: 0.05, rx: 0.3, ry: 0.18, rotation: 25, feather: 50 })], { exposure: 1, contrast: 30, temperature: 40 })] },
+  { masks: [M([C({ type: 'radial', cx: 0, cy: 0, rx: 0.25, ry: 0.25, rotation: 0, feather: 30 }, 'add', true)], { exposure: -1, blacks: 30 })] },
+  { masks: [M([C({ type: 'brush', strokes: [STROKE] })], { exposure: 1.2, tint: 30 })] },
+  { masks: [M([C({ type: 'brush', strokes: [STROKE, { ...STROKE, erase: true, points: [{ x: -0.1, y: -0.05, p: 1 }, { x: 0.05, y: 0.05, p: 1 }], radius: 0.04 }] })], { highlights: -60, shadows: 50 })] },
+  { masks: [M([C({ type: 'color', labFrom: [60, 180, 80], range: 35 })], { saturation: 60, exposure: 0.5 })] },
+  { masks: [M([C({ type: 'luminance', min: 55, max: 100, smooth: 25 })], { exposure: -1, vibrance: 40 })] },
+  { masks: [M([C({ type: 'luminance', min: 0, max: 30, smooth: 10 })], { shadows: 80, whites: -30 })] },
+  { masks: [M([C({ type: 'linear', x1: 0, y1: -0.35, x2: 0, y2: 0.2, feather: 50 }), C({ type: 'radial', cx: 0, cy: -0.1, rx: 0.15, ry: 0.15, rotation: 0, feather: 40 }, 'subtract'), C({ type: 'luminance', min: 20, max: 100, smooth: 20 }, 'intersect')], { exposure: -0.8, temperature: -30 })] },
+  { masks: [M([C({ type: 'linear', x1: 0, y1: -0.3, x2: 0, y2: 0.1, feather: 60 })], { exposure: -0.8 }, { invert: true, amount: 60 })] },
+  { masks: [M([C({ type: 'radial', cx: -0.1, cy: 0, rx: 0.3, ry: 0.3, rotation: 0, feather: 60 })], { exposure: 0.7 }), M([C({ type: 'linear', x1: 0, y1: 0.3, x2: 0, y2: -0.1, feather: 50 })], { saturation: -60, contrast: 25 })] },
+  // masked texture / clarity / dehaze (multi-pass + masks)
+  { masks: [M([C({ type: 'radial', cx: -0.1, cy: 0, rx: 0.3, ry: 0.25, rotation: 0, feather: 50 })], { clarity: 80, texture: 60, dehaze: 40 })] },
+  { clarity: 30, masks: [M([C({ type: 'linear', x1: 0, y1: -0.3, x2: 0, y2: 0.2, feather: 40 })], { dehaze: -50, exposure: 0.3 })] },
+  // geometry + masks + everything
+  { crop: { x: 0.1, y: 0.1, w: 0.7, h: 0.8 }, straighten: 5, lensDistortion: 30, exposure: 0.3,
+    masks: [M([C({ type: 'radial', cx: 0, cy: 0, rx: 0.3, ry: 0.2, rotation: 10, feather: 50 })], { exposure: 0.8, saturation: 30 })] },
   // everything at once
   {
     exposure: 0.5, contrast: 25, highlights: -30, shadows: 40, temperature: 12, vibrance: 20,
@@ -53,7 +87,7 @@ try {
     const noEffect = Object.keys(r.params).length > 0 && r.effect < 0.01; // an adjustment that changes nothing is a bug
     const bad = r.maxDiff > TOLERANCE || !r.localSupported || noEffect;
     if (bad) failed = true;
-    console.log(`${bad ? 'FAIL' : 'ok  '} max=${r.maxDiff} mean=${r.meanDiff.toFixed(3)} effect=${r.effect.toFixed(2)} over2=${r.pixelsOver2}  ${JSON.stringify(r.params).slice(0, 110)}`);
+    console.log(`${bad ? 'FAIL' : 'ok  '} max=${r.maxDiff} mean=${r.meanDiff.toFixed(3)} effect=${r.effect.toFixed(2)} over2=${r.pixelsOver2}  ${JSON.stringify(r.params).slice(0, 100)}`);
   }
 } catch (e) {
   console.error(e);

@@ -14,9 +14,16 @@ import { BLUR_FRAGMENT, DOWNSAMPLE_FRAGMENT, VERTEX_SHADER, buildFragmentShader,
 import { DEFAULT_PIPELINE, type StageId } from './pipeline';
 import { LUT_SIZE } from './curves';
 import { derive, lutFor } from './derive';
+import { outputSize } from '../geometry/transform';
+import { RASTER_SIZE } from '../masks/brush';
+import { MAX_RASTERS } from '../masks/types';
 import type { EditParams } from './params';
 
-export interface RenderOptions { showClipping?: boolean }
+export interface RenderOptions {
+  showClipping?: boolean;
+  /** Index into params.masks of the mask to tint red (the masking tool's overlay). */
+  overlayMask?: number;
+}
 export interface Readback { data: Uint8Array; width: number; height: number } // RGBA8, bottom row first (GL convention)
 
 interface Target { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number }
@@ -24,6 +31,7 @@ interface Slot { a: Target | null; down: (Target | null)[]; tmp: (Target | null)
 interface Program { prog: WebGLProgram; locs: Map<string, WebGLUniformLocation | null> }
 
 const UNIT = { tex: 0, lut: 1, a: 2, blur0: 3, blur1: 4, blur2: 5 } as const;
+const BRUSH_UNIT = 6;
 
 export class WebGLRenderer {
   readonly gl: WebGL2RenderingContext;
@@ -34,6 +42,8 @@ export class WebGLRenderer {
   private tex: WebGLTexture | null = null;
   private lutTex: WebGLTexture | null = null;
   private lutSource: Float32Array | null = null;
+  private brushTex: WebGLTexture | null = null;
+  private uploadedRasters: (Uint8Array | null)[] = new Array(MAX_RASTERS).fill(null);
   private order: StageId[] = DEFAULT_PIPELINE;
   private slots: Record<'display' | 'readback', Slot> = { display: emptySlot(), readback: emptySlot() };
   private readFbo: { fbo: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number } | null = null;
@@ -156,6 +166,35 @@ export class WebGLRenderer {
     this.lutSource = lut;
   }
 
+  /** Turn mip-mapped minification off (LINEAR only). Used by the parity test so CPU and GPU sample identically. */
+  useMipmaps(on: boolean): void {
+    const gl = this.gl;
+    if (!this.tex) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, on ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+  }
+
+  /** Mask rasters (brush / segmentation) live in one 2D array texture, one layer per raster. */
+  private uploadRasters(rasters: Uint8Array[]) {
+    const gl = this.gl;
+    if (!this.brushTex) {
+      this.brushTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.brushTex);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R8, RASTER_SIZE, RASTER_SIZE, MAX_RASTERS);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.brushTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    rasters.forEach((r, i) => {
+      if (this.uploadedRasters[i] === r) return; // rasters are cached per stroke list: identity = unchanged
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, RASTER_SIZE, RASTER_SIZE, 1, gl.RED, gl.UNSIGNED_BYTE, r);
+      this.uploadedRasters[i] = r;
+    });
+  }
+
   // ------------------------------------------------------------------ drawing
 
   private bind(units: Partial<Record<keyof typeof UNIT, WebGLTexture | null>>) {
@@ -164,12 +203,15 @@ export class WebGLRenderer {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, units[name as keyof typeof UNIT] ?? null);
     }
+    gl.activeTexture(gl.TEXTURE0 + BRUSH_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.brushTex);
   }
 
   private setUniforms(p: Program, u: Record<string, Uniform>, clip: boolean) {
     const gl = this.gl;
     gl.useProgram(p.prog);
     for (const [name, sampler] of Object.entries(UNIT)) { const l = this.loc(p, 'u_' + name); if (l) gl.uniform1i(l, sampler); }
+    const lb = this.loc(p, 'u_brush'); if (lb) gl.uniform1i(lb, BRUSH_UNIT);
     const lc = this.loc(p, 'u_clip'); if (lc) gl.uniform1i(lc, clip ? 1 : 0);
     for (const [name, x] of Object.entries(u)) {
       const l = this.loc(p, name);
@@ -181,6 +223,8 @@ export class WebGLRenderer {
         case 'v3': gl.uniform3fv(l, x.v); break;
         case 'v4': gl.uniform4fv(l, x.v); break;
         case 'fv': gl.uniform1fv(l, x.v); break;
+        case 'v4v': if (x.v.length) gl.uniform4fv(l, x.v); break;
+        case 'm3': gl.uniformMatrix3fv(l, false, x.v); break;
       }
     }
   }
@@ -194,12 +238,13 @@ export class WebGLRenderer {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  private run(params: EditParams, w: number, h: number, dest: WebGLFramebuffer | null, slot: Slot, clip: boolean) {
+  private run(params: EditParams, w: number, h: number, dest: WebGLFramebuffer | null, slot: Slot, clip: boolean, overlayMask = -1) {
     if (!this.tex) return;
     const gl = this.gl;
-    const d = derive(params, w, h);
+    const d = derive(params, w, h, { w: this.imageSize.width, h: this.imageSize.height });
     this.uploadLut(lutFor(params));
-    const u = derivedToUniforms(d);
+    this.uploadRasters(d.masks.rasters);
+    const u = derivedToUniforms(d, overlayMask >= 0 ? d.masks.source.indexOf(overlayMask) : -1);
     const useLocal = d.active.local && this.supportsLocal && this.order.includes('local');
     const order = this.order;
 
@@ -248,7 +293,7 @@ export class WebGLRenderer {
 
     // Pass 2: `local` and everything after, reading A + blur fields
     const p2 = this.stageProgram(order.slice(li), 'float', 'display');
-    this.bind({ lut: this.lutTex, a: a.tex, blur0: slot.blur[0]!.tex, blur1: slot.blur[1]!.tex, blur2: slot.blur[2]!.tex });
+    this.bind({ tex: this.tex, lut: this.lutTex, a: a.tex, blur0: slot.blur[0]!.tex, blur1: slot.blur[1]!.tex, blur2: slot.blur[2]!.tex });
     this.setUniforms(p2, u, clip);
     this.draw(dest, w, h);
   }
@@ -256,16 +301,13 @@ export class WebGLRenderer {
   /** Render to the canvas' default framebuffer (canvas pixel size = drawing size). */
   render(params: EditParams, opts: RenderOptions = {}): void {
     const gl = this.gl;
-    this.run(params, gl.drawingBufferWidth, gl.drawingBufferHeight, null, this.slots.display, !!opts.showClipping);
+    this.run(params, gl.drawingBufferWidth, gl.drawingBufferHeight, null, this.slots.display, !!opts.showClipping, opts.overlayMask ?? -1);
   }
 
   /** Render into an offscreen RGBA8 target whose long edge is ≤ maxDim and read the pixels. */
   readback(params: EditParams, maxDim = 256): Readback {
     const gl = this.gl;
-    const { width, height } = this.imageSize;
-    const scale = Math.min(1, maxDim / Math.max(width, height));
-    const w = Math.max(1, Math.round(width * scale));
-    const h = Math.max(1, Math.round(height * scale));
+    const { w, h } = outputSize(params, this.imageSize.width, this.imageSize.height, maxDim);
     if (!this.readFbo || this.readFbo.w !== w || this.readFbo.h !== h) {
       if (this.readFbo) { gl.deleteTexture(this.readFbo.tex); gl.deleteFramebuffer(this.readFbo.fbo); }
       const t = this.makeTarget(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
@@ -283,6 +325,7 @@ export class WebGLRenderer {
     const gl = this.gl;
     if (this.tex) gl.deleteTexture(this.tex);
     if (this.lutTex) gl.deleteTexture(this.lutTex);
+    if (this.brushTex) gl.deleteTexture(this.brushTex);
     for (const s of Object.values(this.slots)) for (const t of [s.a, ...s.down, ...s.tmp, ...s.blur]) if (t) this.freeTarget(t);
     if (this.readFbo) { gl.deleteTexture(this.readFbo.tex); gl.deleteFramebuffer(this.readFbo.fbo); }
     for (const p of this.programs.values()) gl.deleteProgram(p.prog);
