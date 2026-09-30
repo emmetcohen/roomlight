@@ -20,6 +20,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'before-after', label: 'Toggle before / after', keys: ['\\'], run: () => store.toggleOriginal() },
   { id: 'clipping', label: 'Toggle clipping warnings', keys: ['j'], run: () => store.toggleClipping() },
   { id: 'reset-all', label: 'Reset all edits', keys: ['mod+shift+r'], run: () => store.resetAll() },
+  { id: 'zoom', label: 'Zoom: fit ↔ 100 %', keys: ['z'], run: () => store.toggleZoom() },
   { id: 'tool-edit', label: 'Edit tool', keys: ['e'], run: () => store.setTool('edit') },
   { id: 'tool-crop', label: 'Crop tool', keys: ['c'], run: () => store.setTool('crop') },
   { id: 'tool-mask', label: 'Masking tool', keys: ['m'], run: () => store.setTool('mask') },
@@ -57,6 +58,9 @@ export function installShortcuts(): () => void {
     const t = e.target as HTMLElement | null;
     const typing = t && (t.tagName === 'INPUT' && (t as HTMLInputElement).type !== 'range' || t.tagName === 'TEXTAREA');
     if (typing) return;
+    // Menus, dropdowns and text editing keep their own keys; digits on a focused slider are not ratings.
+    if (t && (t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (t?.tagName === 'INPUT' && /^[0-9]$/.test(e.key)) return;
     // Arrow keys on a focused slider belong to the slider.
     if (t?.tagName === 'INPUT' && e.key.startsWith('Arrow')) return;
     const combo = comboOf(e);

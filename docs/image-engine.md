@@ -264,12 +264,61 @@ Exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibr
 three buttons are disabled and say so; nothing pretends to detect a subject. A registered provider's raster is used exactly like a brush raster (unit
 tested with a clearly-named test double). Rasters from providers are not persisted yet (they would be recomputed).
 
+## Retouching: clone, heal, remove (Phase 5) — `src/retouch/`
+A **spot** `{ kind, x, y, sx, sy, r, feather, opacity, enabled }` replaces the pixels inside a circle (centre `x,y`, radius `r`) with pixels from a source circle
+(centre `sx,sy`). Coordinates are **mask space** (centred source px ÷ long edge), so spots follow the picture through crop, rotate and perspective, and are
+resolution independent (the same list is applied to the 2560 px preview, the full-size 1:1 view and the export). Spots are applied to the **source pixels
+before** geometry and every tonal adjustment — a derived cache (`retouchedPixels`), never written back; "Before" shows the genuine original.
+
+* **Clone** — copy the source circle as it is. Blend weight `w(d) = 1` inside `R(1−feather)`, smoothstep down to 0 at `R`; result `= mix(target, source, w·opacity)`.
+* **Heal** — seamless-cloning by boundary interpolation. With source offset `d` and `N = 32` points `b_i` on a circle just outside the spot, the mismatch
+  `e_i = T(b_i) − S(b_i + d)` is interpolated inside with **mean-value coordinates** (Floater 2003):
+  `m(p) = Σ λ_i(p) e_i`, `λ_i ∝ (tan(α_{i−1}/2) + tan(α_i/2)) / |b_i − p|`, `α_i` = angle at `p` between `b_i` and `b_{i+1}`.
+  `healed(p) = max(0, S(p + d) + m(p))`. `m` equals the boundary mismatch on the boundary (no seam) and is smooth inside (only low-frequency colour/brightness
+  changes), so the copied texture survives. All in linear light.
+* **Remove** — heal with an **automatically chosen source**: candidates on rings at `2.3, 3.2, 4.4, 6 ×R` around the target (16 angles each, never overlapping it);
+  score = Σ|T(q_j) − S(q_j + d)|² over 32 points on two rings just outside the target + `0.3·32·Var(candidate interior)` (so a patch with its own blemish loses);
+  lowest score wins; deterministic. This is classic patch matching, **not generative AI**: it can only reuse what already exists in the photo. If no candidate
+  fits inside the picture it reports that and changes nothing.
+* Spots apply in list order (later spots see earlier results); the input array is never modified; limits: 64 spots.
+
+## Library, metadata, presets (Phase 6)
+* **Storage v2** (`src/storage/db.ts`): additive stores `info` (per-photo rating/flag/label/title/caption/keywords/albums/EXIF — kept *separate* from the photo record so the
+  original is never rewritten), `albums`, `presets`. A v1 database upgrades in place (tested).
+* **EXIF** (`src/metadata/exif.ts`, `exifWriter.ts`): dependency-free JPEG reader for camera, lens, exposure, date, GPS, copyright; returns `null` — never invented
+  values — for files without EXIF. It can also carry the original block into an export (Orientation reset to 1 because pixels are already upright), delete the GPS
+  IFD in place, or write a fresh block from the understood fields. Fuzz-tested against corrupted input.
+* **Query** (`src/library/query.ts`): filters AND together (rating ≥ n, flags, colour label, album, edited-only, free text over name/title/caption/keywords/camera/lens);
+  natural sort by name, capture time (falls back to import time), rating, date added.
+* **Presets and copy/paste** are the same object: a *sparse* parameter set (`src/presets/snapshot.ts`) made of **groups** (`groups.ts`: WB, tone, presence, colour, curve,
+  mixer, grading, vignette, grain, lens, geometry, crop, masks, spots). Applying one overwrites only the parameters it contains, validates/clamps the result, gives
+  masks and spots fresh ids, and is one undo step — also on photos that are not open. Built-in presets are plain data (`builtin.ts`, tested to be in-range and to
+  change the picture); user presets are stored and can be exported/imported as JSON (validated on import).
+* **Auto tone** (`src/image-engine/autoTone.ts`) is a histogram heuristic, not AI: exposure puts the median at encoded 0.46 (damped ×0.85, ±2.5 EV), blacks/whites/contrast from the
+  1 % / 99 % points after that exposure, shadows/highlights recovery from the size of the dark/bright populations. Always clamped; always undoable.
+
+## Export, zoom and performance (Phase 7)
+* **Export** (`src/export/`): the original file is decoded at full size (orientation applied), retouched, rendered by the *same* shader pipeline at the **output size**
+  (no upscaling of the preview), un-premultiplied, optionally sharpened, flattened over a background colour for JPEG, encoded, and (JPEG) given metadata.
+  `renderExport` runs identically in a **module Web Worker** (OffscreenCanvas + WebGL2) or on the main thread; `runExport` picks the worker and falls back to the
+  main thread if a worker is unavailable or blocked, and the dialog says which one ran. GPU/pixel limits are reported, never hidden.
+  * Resize: full / long edge / fit-in-box / percent, with "don't enlarge". Formats: JPEG, PNG, WebP (if the browser cannot encode WebP it writes PNG and says so).
+  * Output sharpening (`sharpen.ts`): unsharp mask on **luminance only** of the final 8-bit pixels: `Y = 0.2126R+0.7152G+0.0722B`, `c' = c + 1.5·(amount/100)·(Y − G_σ*Y)`,
+    `σ = clamp(longEdge/3000, 0.6, 1.8)` px. An edge between two colours of equal luminance is therefore (correctly) not sharpened.
+  * Batches: file-name templates (`{name} {n} {nnn} {date} {rating} {title} {w} {h}`), unique names, and a store-only **ZIP** writer with CRC-32 (validated against Python's `zipfile`).
+  * Colour: exports are sRGB; there is no wide-gamut / ICC output yet.
+* **View windows and zoom** (`ViewWindow` in `webglRenderer.ts`, `src/editor/viewMath.ts`): the shader takes `u_view = (x, y, w, h)`, the region of the output picture being drawn, and a
+  *virtual* output size (the picture at the current zoom). Every effect is a function of **output position**, so a window shows exactly what a full-size render shows there;
+  the parity harness checks a half-size window against the same pixels of the full render (70 cases, difference 0). Texture/Clarity/Dehaze need whole-picture blur fields:
+  a zoomed window takes them from a whole-picture render of ≤3072 px (cached until the edit changes), which is exact for exports (no window) and an approximation at very high zoom.
+  Above the preview's resolution the original is decoded at full size (capped by the GPU's texture limit) and released again when zoom returns to Fit.
+
 ## Import
 `src/import/decoders.ts` is a decoder registry. Only the browser decoder (JPEG/PNG/WebP/…) is
 installed. RAW, HEIC and TIFF files are **rejected with an explicit message**, never treated as
 JPEG. A RAW decoder = implement `ImageDecoder`, `registerDecoder()`.
 Images are decoded with EXIF orientation applied. The editing preview is capped at 2560px on the
-long edge; the original file stays in storage for full-resolution export.
+long edge; the original file stays in storage for full-resolution export and 1:1 viewing.
 
 ## Known limitations (Phase 1)
 See README.md.

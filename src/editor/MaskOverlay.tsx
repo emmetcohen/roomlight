@@ -2,6 +2,7 @@ import { useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { maskToOutput, outputToMask, type GeoMap } from '../geometry/transform';
 import type { Shape } from '../masks/types';
 import { brushRadius, store, useEditor } from './store';
+import { IDENTITY_VIEW, type ViewRect } from './viewMath';
 
 type Linear = Extract<Shape, { type: 'linear' }>;
 type Radial = Extract<Shape, { type: 'radial' }>;
@@ -11,7 +12,7 @@ type Radial = Extract<Shape, { type: 'radial' }>;
  * Everything goes through the geometry transform, so handles stay on the right image content
  * under crop / rotate / perspective, and edits are stored in image-attached mask space.
  */
-export function MaskOverlay({ width, height, geo, srcW, srcH }: { width: number; height: number; geo: GeoMap; srcW: number; srcH: number }) {
+export function MaskOverlay({ width, height, geo, srcW, srcH, view = IDENTITY_VIEW }: { width: number; height: number; geo: GeoMap; srcW: number; srcH: number; view?: ViewRect }) {
   const masks = useEditor((s) => s.params.masks);
   const selMask = useEditor((s) => s.selectedMask);
   const selComp = useEditor((s) => s.selectedComp);
@@ -28,7 +29,7 @@ export function MaskOverlay({ width, height, geo, srcW, srcH }: { width: number;
 
   const toScreen = (mx: number, my: number): [number, number] | null => {
     const o = maskToOutput(geo, mx, my);
-    return o ? [o[0] * width, o[1] * height] : null;
+    return o ? [((o[0] - view.ox) / view.sx) * width, ((o[1] - view.oy) / view.sy) * height] : null;
   };
   const local = (e: { clientX: number; clientY: number }) => {
     const r = svgRef.current!.getBoundingClientRect();
@@ -36,10 +37,10 @@ export function MaskOverlay({ width, height, geo, srcW, srcH }: { width: number;
   };
   const toMask = (e: { clientX: number; clientY: number }): [number, number] | null => {
     const [x, y] = local(e);
-    return outputToMask(geo, x / width, y / height);
+    return outputToMask(geo, view.ox + (x / width) * view.sx, view.oy + (y / height) * view.sy);
   };
   /** Screen pixels per mask-space unit (for sizing the brush cursor). */
-  const pxPerMask = (width / (geo.crop.w * geo.canvas.w)) * geo.L;
+  const pxPerMask = ((width / (geo.crop.w * geo.canvas.w)) * geo.L) / view.sx;
 
   if (!mask || !comp || !shape) return <svg ref={svgRef} className="mask-overlay" width={width} height={height} style={{ pointerEvents: 'none' }} />;
 
@@ -121,7 +122,7 @@ export function MaskOverlay({ width, height, geo, srcW, srcH }: { width: number;
       store.beginStroke(m[0], m[1], e.pointerType === 'pen' ? e.pressure || 0.5 : 1);
     } else if (shape.type === 'color' && pickingColor) {
       const [x, y] = local(e);
-      store.pickMaskColor(x / width, y / height);
+      store.pickMaskColor(view.ox + (x / width) * view.sx, view.oy + (y / height) * view.sy);
     }
   };
   const onMove = (e: PointerEvent<SVGSVGElement>) => {

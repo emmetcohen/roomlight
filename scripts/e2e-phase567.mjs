@@ -345,6 +345,85 @@ try {
   const line = await decodedPixel(r.bytes, 'image/jpeg', 101, 1500), gap = await decodedPixel(r.bytes, 'image/jpeg', 140, 1500);
   check('fine detail survives at full resolution (a 2-px line is still dark)', line[0] + line[1] + line[2] < 200 && gap[0] + gap[1] + gap[2] > 300, `${line} vs ${gap}`);
 
+
+  // --- zoom, pan and full resolution (the 3600 x 2400 photo, whose preview is only 2560 px wide)
+  await page.locator('[data-photo]').last().click(); await page.waitForTimeout(900); await blur();
+  const cv = page.locator('[data-testid=viewer-canvas]');
+  const attr = (n) => cv.getAttribute(n);
+  check('the viewer starts fitted, on the preview', (await attr('data-zoom')) === 'fit' && /^preview 2560x1707/.test(await attr('data-source')), `${await attr('data-zoom')} ${await attr('data-source')}`);
+  const fitCentre = await pixelAt(0.5, 0.5);
+  await page.locator('[data-zoom-btn="100"]').click();
+  await page.waitForFunction(() => /^full 3600x2400/.test(document.querySelector('[data-testid=viewer-canvas]')?.getAttribute('data-source') ?? ''), null, { timeout: 30000 });
+  await page.waitForTimeout(600);
+  check('100% zooms to exactly one image pixel per screen pixel', Math.abs(parseFloat(await attr('data-zoom')) - 1) < 0.001 && (await page.locator('[data-testid=zoom-readout]').innerText()) === '100%', `${await attr('data-zoom')}`);
+  check('above the preview resolution the original is loaded at its true 3600 × 2400', /full 3600x2400/.test(await attr('data-source')));
+  const zoomCentre = await pixelAt(0.5, 0.5);
+  check('the zoomed picture shows the same scene (colour at the centre agrees with the fitted view)', Math.hypot(zoomCentre[0] - fitCentre[0], zoomCentre[1] - fitCentre[1], zoomCentre[2] - fitCentre[2]) < 25, `${fitCentre} vs ${zoomCentre}`);
+  // fine detail: the 2-px black lines every 80 px are resolved at 100 %
+  const darkRuns = async () => {
+    const png = await cv.screenshot();
+    return page.evaluate(async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+      const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+      const y = Math.round(bmp.height * 0.8); const row = g.getImageData(0, y, bmp.width, 1).data; const runs = []; let len = 0;
+      for (let x = 0; x < bmp.width; x++) { const d = row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2] < 200; if (d) len++; else { if (len) runs.push(len); len = 0; } }
+      return runs;
+    }, png.toString('base64'));
+  };
+  const runs = await darkRuns();
+  check('1:1 detail is real: the 2-px lines are resolved as narrow dark runs', runs.length >= 8 && runs.every((l) => l <= 4) && runs.filter((l) => l >= 2).length >= 6, `${runs.length} runs: ${runs.slice(0, 10)}`);
+
+  // pan by dragging
+  const v0 = (await attr('data-view')).split(',').map(Number);
+  const b = await canvasBox();
+  await page.mouse.move(b.x + b.width * 0.5, b.y + b.height * 0.5); await page.mouse.down(); await page.mouse.move(b.x + b.width * 0.5 - 200, b.y + b.height * 0.5 - 100, { steps: 6 }); await page.mouse.up(); await page.waitForTimeout(300);
+  const v1 = (await attr('data-view')).split(',').map(Number);
+  check('dragging pans the window (200 px left = 200/3600 of the width)', Math.abs((v1[0] - v0[0]) - 200 / 3600) < 0.004 && Math.abs((v1[1] - v0[1]) - 100 / 2400) < 0.004, `${v0} -> ${v1}`);
+  await page.mouse.move(b.x + b.width * 0.5, b.y + b.height * 0.5); await page.mouse.down(); await page.mouse.move(b.x - 5000, b.y - 5000, { steps: 4 }); await page.mouse.up();
+  const v2 = (await attr('data-view')).split(',').map(Number);
+  check('the window stops at the picture edge instead of going past it', v2[0] + v2[2] <= 1.0001 && v2[1] + v2[3] <= 1.0001 && v2[0] >= 0, `${v2}`);
+
+  // wheel zoom about the cursor
+  await page.mouse.move(b.x + b.width * 0.3, b.y + b.height * 0.4);
+  const z0 = parseFloat(await attr('data-zoom'));
+  await page.mouse.wheel(0, -400); await page.waitForTimeout(400);
+  check('the mouse wheel zooms in', parseFloat(await attr('data-zoom')) > z0 * 1.2, `${z0} -> ${await attr('data-zoom')}`);
+  await page.mouse.wheel(0, 4000); await page.waitForTimeout(500);
+  check('zooming all the way out returns to Fit', (await attr('data-zoom')) === 'fit');
+  check('leaving zoom releases the full-resolution copy', /^preview/.test(await attr('data-source')));
+
+  // Z key and buttons
+  await page.keyboard.press('z'); await page.waitForTimeout(400);
+  check('Z toggles to 100 %', Math.abs(parseFloat(await attr('data-zoom')) - 1) < 0.001);
+  await page.keyboard.press('z'); await page.waitForTimeout(300);
+  check('Z toggles back to Fit', (await attr('data-zoom')) === 'fit');
+  await page.locator('[data-zoom-btn="200"]').click(); await page.waitForTimeout(500);
+  check('the 200% button zooms to 2.0', Math.abs(parseFloat(await attr('data-zoom')) - 2) < 0.001);
+
+  // neighbourhood effects while zoomed (whole-picture blur source, windowed draw) — must render, and change the picture
+  await page.locator('[data-param=clarity] .slider-number').fill('70'); await page.locator('[data-param=clarity] .slider-number').press('Enter'); await page.waitForTimeout(500);
+  await page.locator('[data-param=dehaze] .slider-number').fill('40'); await page.locator('[data-param=dehaze] .slider-number').press('Enter'); await page.waitForTimeout(500);
+  const withLocal = await pixelAt(0.3, 0.3);
+  await page.getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(500);
+  const noLocal = await pixelAt(0.3, 0.3);
+  check('clarity + dehaze render in a zoomed window and change the picture', Math.hypot(withLocal[0] - noLocal[0], withLocal[1] - noLocal[1], withLocal[2] - noLocal[2]) > 4, `${noLocal} -> ${withLocal}`);
+  await page.locator('[data-zoom-btn="fit"]').click(); await page.waitForTimeout(300);
+
+  // tools keep working while zoomed: retouch click lands where the pointer is
+  await page.locator('[data-photo]').first().click(); await page.waitForTimeout(900); await blur();
+  await page.getByRole('button', { name: 'Reset All' }).click().catch(() => {}); await page.waitForTimeout(300);
+  await page.locator('[data-zoom-btn="200"]').click(); await page.waitForTimeout(600);
+  check('the blemish is still there, now at twice the size', dark(await pixelAt(0.5, 0.5)));
+  await page.keyboard.press('q'); await page.locator('[data-spot-kind=remove]').click(); await page.locator('[data-retouch=size] .slider-number').fill('40'); await page.locator('[data-retouch=size] .slider-number').press('Enter'); await blur();
+  await clickAt(0.5, 0.5);
+  const spotC = await page.evaluate(() => { const c = document.querySelector('[data-spot] circle[data-handle=target]'); const r = c.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2, r.width / 2]; });
+  const bb = await canvasBox();
+  check('the spot marker is drawn where it was placed, at the zoomed scale', Math.abs(spotC[0] - (bb.x + bb.width / 2)) < 6 && Math.abs(spotC[1] - (bb.y + bb.height / 2)) < 6 && spotC[2] > 40, `${spotC}`);
+  await page.locator('label.chk:has-text("Show spots") input').uncheck(); await blur(); await page.waitForTimeout(400);
+  check('retouching works in a zoomed window', !dark(await pixelAt(0.5, 0.5)), JSON.stringify(await pixelAt(0.5, 0.5)));
+  await page.locator('label.chk:has-text("Show spots") input').check();
+  await page.keyboard.press('Escape'); await page.locator('[data-zoom-btn="fit"]').click();
+
   // --- batch export as one ZIP, validated by Python's zipfile
   await blur(); await page.keyboard.press('Control+a');
   await page.keyboard.press('Control+Shift+E'); await page.locator('[role=dialog][aria-label=Export]').waitFor();

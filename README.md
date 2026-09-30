@@ -8,12 +8,13 @@ npm install
 npm run dev          # http://localhost:5173
 npm test             # engine / history / storage unit tests (vitest)
 npm run verify:gpu   # WebGL shaders vs CPU reference (74 cases), in headless Chromium
-npm run verify:e2e   # drives the real UI in headless Chromium
+npm run verify:e2e   # drives the real UI in headless Chromium (Phases 1–4, then 5–7: downloads and inspects exported files)
+npm run verify:build # builds the single-file page and exports a photo through it
 npm run build
 ```
 `verify:*` use Playwright with a system Chromium (`CHROMIUM_PATH`, or `/opt/pw-browsers/chromium`).
 
-## Status: Phases 1–4 complete
+## Status: Phases 1–7 complete
 
 Working: import (JPEG/PNG/WebP), filmstrip, viewer, real histogram (+ clipping), undo/redo + history list, reset per slider / section / all,
 before/after, IndexedDB persistence (originals + edits + crops + masks), shortcuts, and:
@@ -28,8 +29,14 @@ before/after, IndexedDB persistence (originals + edits + crops + masks), shortcu
   luminance range; add / subtract / intersect / invert; per-mask local adjustments (exposure … dehaze); overlay. Subject / Sky / Background are
   **unavailable** (no segmentation model is installed) and labelled as such; the plug-in interface exists.
 
-Not yet (by phase): heal/clone (5); presets, copy/paste, ratings, flags, albums, search, EXIF metadata (6); export, full-res/worker rendering,
-zoom/pan (7). Detail (sharpening / noise reduction) is in the spec but not scheduled in a phase yet.
+* **Retouch tool (Q):** clone, heal (seamless mean-value blend) and remove (heal with an automatically found source — patch matching, *not* generative AI). Spots are parameters, always editable.
+* **Library:** 1–5 stars, pick/reject, colour labels, albums, search (name, title, caption, keywords, camera), filters, sorting, multi-select, EXIF viewer, title/caption/keywords. Keyboard: `0–5`, `P`, `X`, `U`, `6–9`.
+* **Presets:** 18 built-in (colour, B&W, film & mood, detail) and your own (save, export/import JSON); **copy/paste settings** by group (Ctrl+Shift+C / V), applied to several photos at once; **Auto tone** (histogram heuristic, not AI).
+* **Export (Ctrl+Shift+E):** JPEG / PNG / WebP at full resolution from the original file (not the preview), in a background worker; resize modes, output sharpening, EXIF keep / basic / none, GPS removal, copyright,
+  file-name templates, batches as one ZIP.
+* **Zoom & pan:** Fit / 100 % / 200 %, wheel zoom around the cursor, drag to pan, `Z`; the original is decoded at full size while zoomed in.
+
+Not built: noise reduction and input sharpening (Detail panel), RAW/HEIC/TIFF decoding, real subject/sky selection (needs a model), lens database, wide-gamut/ICC output, tethering, print/web galleries.
 
 ## Deploying
 `.github/workflows/deploy.yml` tests, builds and publishes `dist/` to GitHub Pages on every push to `main`
@@ -38,7 +45,7 @@ self-contained HTML file (`dist-single/roomlight.html`).
 
 ## Limitations
 * RAW / HEIC / TIFF are refused with a clear message (no decoder installed; the registry is ready for one).
-* The preview is rendered at ≤2560px at full quality on every slider move (low-res-while-dragging is Phase 7).
+* The fitted preview is rendered at ≤2560px at full quality on every slider move (no low-res-while-dragging mode); zooming in decodes the full-size original.
 * Texture/Clarity/Dehaze use a Gaussian base layer (halos at strong edges) and need float render targets
   (EXT_color_buffer_float); without them they are disabled with a notice.
 * The crop only ever shrinks automatically (to hide empty edges); use *Reset crop* to get the framing back. Flips act on the original before other adjustments.
@@ -48,6 +55,10 @@ self-contained HTML file (`dist-single/roomlight.html`).
 * Tone-region sliders are global curves, not local (see docs/image-engine.md).
 * Auto white balance is grey-world and is poor on single-colour-dominated scenes.
 * Requires WebGL2. History is in-memory (edits, not history, persist across reload).
-* Fit-to-window only (no zoom/pan yet).
+* Export: sRGB only; the ZIP is built in memory (keep batches to a few hundred MB, 4 GB hard limit); metadata is embedded in JPEG only; a batch of many separate downloads may be blocked by the browser (use the ZIP option).
+  Outputs are limited by the GPU texture size and 120 MP. If a worker cannot run (blocked context), export runs on the main thread and the UI freezes while it renders.
+* Zoomed windows compute Texture/Clarity/Dehaze blur fields from a ≤3072 px whole-picture render (exact in exports).
+* Retouch *Remove* only reuses pixels from the same photo; for large objects or missing content it will not look right (no generative fill). Spot markers are circles even under strong perspective.
+* Library search is substring based; albums are flat; EXIF is read for JPEG only; no XMP/IPTC sidecars.
 
 See `docs/image-engine.md` for the math of each adjustment.

@@ -1,6 +1,7 @@
 import { useRef, type PointerEvent, type ReactNode } from 'react';
 import { maskToOutput, outputToMask, type GeoMap } from '../geometry/transform';
 import { clampRadius, type Spot } from '../retouch/types';
+import { IDENTITY_VIEW, type ViewRect } from './viewMath';
 import { store, useEditor } from './store';
 
 const COLOR: Record<Spot['kind'], string> = { clone: '#6cc3ff', heal: '#ffffff', remove: '#ffb13d' };
@@ -11,21 +12,21 @@ const COLOR: Record<Spot['kind'], string> = { clone: '#6cc3ff', heal: '#ffffff',
  * small handle on the edge to resize. Everything goes through the geometry transform, so the
  * markers stay on the right content under crop / rotate / perspective.
  */
-export function RetouchOverlay({ width, height, geo }: { width: number; height: number; geo: GeoMap }) {
+export function RetouchOverlay({ width, height, geo, view = IDENTITY_VIEW }: { width: number; height: number; geo: GeoMap; view?: ViewRect }) {
   const spots = useEditor((s) => s.params.spots);
   const selected = useEditor((s) => s.selectedSpot);
   const showOverlay = useEditor((s) => s.showOverlay);
   const svgRef = useRef<SVGSVGElement>(null);
   const sources = store.spotSources();
 
-  const pxPerMask = (width / (geo.crop.w * geo.canvas.w)) * geo.L;
+  const pxPerMask = (width / (geo.crop.w * geo.canvas.w)) * geo.L / view.sx;
   const toScreen = (mx: number, my: number): [number, number] | null => {
     const o = maskToOutput(geo, mx, my);
-    return o ? [o[0] * width, o[1] * height] : null;
+    return o ? [((o[0] - view.ox) / view.sx) * width, ((o[1] - view.oy) / view.sy) * height] : null;
   };
   const toMask = (e: { clientX: number; clientY: number }): [number, number] | null => {
     const r = svgRef.current!.getBoundingClientRect();
-    return outputToMask(geo, (e.clientX - r.left) / width, (e.clientY - r.top) / height);
+    return outputToMask(geo, view.ox + ((e.clientX - r.left) / width) * view.sx, view.oy + ((e.clientY - r.top) / height) * view.sy);
   };
 
   const drag = (label: string, onMove: (m: [number, number], start: [number, number]) => void) => (e: PointerEvent) => {

@@ -57,6 +57,13 @@ export interface PhotoSummary {
   edited: boolean;
 }
 
+/** Zoom: z = device pixels per image pixel (1 = 100 %), null = fit to window. (cx, cy) = centre of the view in output uv. */
+export interface ZoomState { z: number | null; cx: number; cy: number }
+export const MAX_ZOOM = 4;
+
+/** The original decoded at (up to) full size, loaded only while zoomed in. */
+export interface FullRes { photoId: string; bitmap: ImageBitmap }
+
 export interface ExportStatus { done: number; total: number; stage: string; name: string }
 export interface ExportSummary { files: number; bytes: number; notes: string[]; ranIn: 'worker' | 'main' | 'mixed'; zip: boolean; cancelled: boolean; names: string[]; size: string }
 
@@ -113,6 +120,11 @@ export interface EditorState {
   clipboard: SettingsClipboard | null;
   dialog: DialogId | null;
   exportSettings: ExportSettings;
+  zoom: ZoomState;
+  /** Incremented by the Z shortcut; the viewer (which knows the fit scale) performs the toggle. */
+  zoomToggle: number;
+  fullRes: FullRes | null;
+  fullResLoading: boolean;
   exportScope: 'open' | 'selected' | 'shown';
   exportStatus: ExportStatus | null;
   exportSummary: ExportSummary | null;
@@ -150,6 +162,10 @@ const initial: EditorState = {
   clipboard: null,
   dialog: null,
   exportSettings: DEFAULT_EXPORT,
+  zoom: { z: null, cx: 0.5, cy: 0.5 },
+  zoomToggle: 0,
+  fullRes: null,
+  fullResLoading: false,
   exportScope: 'open',
   exportStatus: null,
   exportSummary: null,
@@ -327,6 +343,7 @@ export class EditorStore {
       const analysis = makeAnalysisImage(dec.bitmap);
       const pixels = readPixels(dec.bitmap);
       this.state.image?.bitmap.close();
+      this.state.fullRes?.bitmap.close();
       this.set({
         currentId: id,
         image: { photoId: id, bitmap: dec.bitmap, analysis, pixels },
@@ -342,6 +359,9 @@ export class EditorStore {
         selectedComp: null,
         selectedSpot: null,
         pickingColor: false,
+        zoom: { z: null, cx: 0.5, cy: 0.5 },
+        fullRes: null,
+        fullResLoading: false,
       });
       void this.db.setMeta('lastPhotoId', id);
     } catch (e) {
@@ -375,6 +395,33 @@ export class EditorStore {
   undo = () => { const h = this.h(); if (h) this.setHistory(undo(h)); };
   redo = () => { const h = this.h(); if (h) this.setHistory(redo(h)); };
   jumpTo = (i: number) => { const h = this.h(); if (h) this.setHistory(jumpTo(h, i)); };
+
+
+  // ---------------------------------------------------------------- zoom / pan / full resolution
+  setZoom = (zoom: ZoomState) => this.set({ zoom: { z: zoom.z === null ? null : Math.min(MAX_ZOOM, Math.max(0.02, zoom.z)), cx: zoom.cx, cy: zoom.cy } });
+  toggleZoom = () => this.set({ zoomToggle: this.state.zoomToggle + 1 });
+  zoomFit = () => this.setZoom({ z: null, cx: 0.5, cy: 0.5 });
+  private fullToken = 0;
+  /** Decode the original at up to `maxDim` (the GPU's texture limit) for 1:1 viewing. No-op when already loaded or unnecessary. */
+  ensureFullRes = async (maxDim: number) => {
+    const id = this.state.currentId, rec = id ? this.records.get(id) : null;
+    if (!id || !rec || this.state.fullRes?.photoId === id || this.state.fullResLoading) return;
+    const token = ++this.fullToken;
+    this.set({ fullResLoading: true });
+    try {
+      const dec = await decodeFile(new File([rec.original], rec.name, { type: rec.type }), maxDim);
+      if (token !== this.fullToken || this.state.currentId !== id) { dec.bitmap.close(); return; }
+      this.set({ fullRes: { photoId: id, bitmap: dec.bitmap }, fullResLoading: false });
+    } catch (e) {
+      this.set({ fullResLoading: false });
+      this.toast(`Could not load the full-resolution image: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  releaseFullRes = () => {
+    this.fullToken++;
+    const f = this.state.fullRes;
+    if (f) { f.bitmap.close(); this.set({ fullRes: null, fullResLoading: false }); } else if (this.state.fullResLoading) this.set({ fullResLoading: false });
+  };
 
   // ---------------------------------------------------------------- tools
   openDialog = (dialog: DialogId) => { if (this.state.currentId) this.set({ dialog, ...(dialog === 'export' ? { exportSummary: null, exportScope: this.state.selection.length > 1 ? 'selected' as const : 'open' as const } : {}) }); };

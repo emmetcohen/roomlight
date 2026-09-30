@@ -17,12 +17,22 @@ export function readPixels(bitmap: ImageBitmap): Pixels {
   return { data: d.data, width: d.width, height: d.height };
 }
 
-let last: { pixels: Pixels; spots: Spot[]; result: RetouchResult } | null = null;
+// One cached result per source (the preview and a full-resolution copy can both be in use).
+const cache = new WeakMap<Pixels, { spots: Spot[]; result: RetouchResult }>();
 
 /** Retouched pixels for (pixels, spots); `result.data === pixels.data` when nothing changes. */
 export function retouchedPixels(pixels: Pixels, spots: Spot[]): RetouchResult {
-  if (last && last.pixels === pixels && last.spots === spots) return last.result;
+  const hit = cache.get(pixels);
+  if (hit && hit.spots === spots) return hit.result;
   const result = applySpots(pixels.data, pixels.width, pixels.height, spots);
-  last = { pixels, spots, result };
+  cache.set(pixels, { spots, result });
   return result;
+}
+
+const pixelCache = new WeakMap<ImageBitmap, Pixels>();
+/** Pixels of a bitmap, read once. */
+export function pixelsOf(bitmap: ImageBitmap): Pixels {
+  let p = pixelCache.get(bitmap);
+  if (!p) { p = readPixels(bitmap); pixelCache.set(bitmap, p); }
+  return p;
 }
