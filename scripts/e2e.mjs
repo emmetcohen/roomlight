@@ -19,6 +19,7 @@ try {
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.goto('http://localhost:5198/');
+  await page.locator('[data-left-tab=history]').click();
 
   // Build a test photo in-page (sky gradient, warm ground, coloured blocks) and export as JPEG.
   const b64 = await page.evaluate(async () => {
@@ -101,7 +102,7 @@ try {
 
   // White balance: Auto and eyedropper
   const tempBefore = await page.locator('[data-param=temperature] .slider-number').inputValue();
-  await page.getByRole('button', { name: 'Auto' }).click(); await page.waitForTimeout(200);
+  await page.getByRole('button', { name: 'Auto', exact: true }).click(); await page.waitForTimeout(200);
   const tempAuto = await page.locator('[data-param=temperature] .slider-number').inputValue();
   check('Auto white balance sets Temp/Tint', tempBefore !== tempAuto, `temp ${tempBefore} -> ${tempAuto}`);
   await page.getByRole('button', { name: /Pick neutral/ }).click();
@@ -338,7 +339,7 @@ try {
   // overlay toggle + persistence
   const masksBefore = await page.locator('.mask-list li').count();
   await page.waitForTimeout(700);
-  await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(800);
+  await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(800); await page.locator('[data-left-tab=history]').click();
   await page.locator('[data-tool=mask]').click(); await settle();
   check('masks persist across reload (strokes, shapes, adjustments)', (await page.locator('.mask-list li').count()) === masksBefore && masksBefore >= 4);
   await page.locator('.mask-list li').first().click(); await settle();
@@ -379,7 +380,7 @@ try {
   // Persistence: edits survive a reload; original bytes intact
   await page.waitForTimeout(700);
   const savedExposure = await page.locator('[data-param=exposure] .slider-number').inputValue();
-  await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(700);
+  await page.reload(); await page.waitForSelector('.thumb.current'); await page.waitForTimeout(700); await page.locator('[data-left-tab=history]').click();
   check('edits persist across reload', (await page.locator('[data-param=exposure] .slider-number').inputValue()) === savedExposure, `exposure ${savedExposure}`);
   const origOk = await page.evaluate(async () => {
     const db = await new Promise((r) => { const q = indexedDB.open('roomlight'); q.onsuccess = () => r(q.result); });

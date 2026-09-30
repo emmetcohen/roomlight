@@ -30,7 +30,14 @@ import { findSource } from '../retouch/apply';
 import * as SpotOps from '../retouch/ops';
 import { readPixels, retouchedPixels, type Pixels } from '../retouch/source';
 import { SPOT_KIND_LABEL, newSpot, type Spot, type SpotKind } from '../retouch/types';
-import { EDIT_SCHEMA_VERSION, IndexedDbPhotoStore, type PhotoRecord, type PhotoStore } from '../storage/db';
+import { EDIT_SCHEMA_VERSION, IndexedDbPhotoStore, type PhotoRecord, type PhotoStore, type PresetRecord } from '../storage/db';
+import { NO_FILTER, defaultInfo, normalizeInfo, type AlbumRecord, type ColorLabel, type Flag, type LibraryFilter, type PhotoInfo, type SortKey } from '../library/types';
+import { queryPhotos } from '../library/query';
+import { readExif } from '../metadata/readExif';
+import { BUILTIN_PRESETS, type Preset } from '../presets/builtin';
+import { DEFAULT_GROUPS, type GroupId } from '../presets/groups';
+import { applyPreset, extractPreset, sanitizePreset, type PresetData } from '../presets/snapshot';
+import { autoTone } from '../image-engine/autoTone';
 
 /** Long edge of the working preview. Full-resolution rendering is an export-phase concern. */
 export const PREVIEW_MAX_DIM = 2560;
@@ -41,8 +48,14 @@ export interface PhotoSummary {
   width: number;
   height: number;
   size: number;
+  addedAt: number;
   thumbUrl: string | null;
+  info: PhotoInfo;
+  /** Has non-default edits. */
+  edited: boolean;
 }
+
+export interface SettingsClipboard { groups: GroupId[]; data: PresetData; from: string }
 
 export interface LoadedImage {
   photoId: string;
@@ -53,6 +66,7 @@ export interface LoadedImage {
 }
 
 export type Tool = 'edit' | 'crop' | 'mask' | 'retouch';
+export type DialogId = 'copy' | 'paste' | 'savePreset' | 'export';
 
 export interface RetouchSettings {
   kind: SpotKind;
@@ -82,6 +96,17 @@ export interface EditorState {
   pickingColor: boolean;
   ready: boolean;
   photos: PhotoSummary[];
+  /** Ids of the photos that pass the filter, in display order. */
+  visible: string[];
+  albums: AlbumRecord[];
+  userPresets: PresetRecord[];
+  filter: LibraryFilter;
+  sort: SortKey;
+  sortDesc: boolean;
+  /** Multi-selection in the filmstrip (empty = just the open photo). */
+  selection: string[];
+  clipboard: SettingsClipboard | null;
+  dialog: DialogId | null;
   currentId: string | null;
   image: LoadedImage | null;
   loading: boolean;
@@ -106,6 +131,15 @@ const initial: EditorState = {
   pickingColor: false,
   ready: false,
   photos: [],
+  visible: [],
+  albums: [],
+  userPresets: [],
+  filter: NO_FILTER,
+  sort: 'added',
+  sortDesc: false,
+  selection: [],
+  clipboard: null,
+  dialog: null,
   currentId: null,
   image: null,
   loading: false,
@@ -145,6 +179,7 @@ export class EditorStore {
     if (!id) return;
     this.histories.set(id, h);
     this.set({ history: h, params: present(h), canUndo: canUndo(h), canRedo: canRedo(h) });
+    this.markEdited(id, present(h));
     if (persist) this.scheduleSave();
   }
 
@@ -167,20 +202,50 @@ export class EditorStore {
 
   // ---- library
   async init() {
-    const records = await this.db.listPhotos();
+    const [records, infos, edits, albums, userPresets] = await Promise.all([this.db.listPhotos(), this.db.listInfo(), this.db.listEdits(), this.db.listAlbums(), this.db.listPresets()]);
+    const infoBy = new Map(infos.map((i) => [i.photoId, normalizeInfo(i, i.photoId)]));
+    const editedBy = new Map(edits.map((e) => [e.photoId, !isDefault(normalizeParams(e.edits))]));
     const photos: PhotoSummary[] = [];
     for (const r of records) {
       this.records.set(r.id, r);
-      photos.push(this.summarize(r));
+      photos.push(this.summarize(r, infoBy.get(r.id) ?? defaultInfo(r.id), editedBy.get(r.id) ?? false));
     }
-    this.set({ photos, ready: true });
+    this.setPhotos(photos, { albums, userPresets });
+    this.set({ ready: true });
+    void this.backfillInfo();
     const last = await this.db.getMeta<string>('lastPhotoId');
     const pick = photos.find((p) => p.id === last) ?? photos[0];
     if (pick) await this.select(pick.id);
   }
 
-  private summarize(r: PhotoRecord): PhotoSummary {
-    return { id: r.id, name: r.name, width: r.width, height: r.height, size: r.size, thumbUrl: r.thumbnail ? URL.createObjectURL(r.thumbnail) : null };
+  private summarize(r: PhotoRecord, info: PhotoInfo, edited = false): PhotoSummary {
+    return { id: r.id, name: r.name, width: r.width, height: r.height, size: r.size, addedAt: r.addedAt, thumbUrl: r.thumbnail ? URL.createObjectURL(r.thumbnail) : null, info, edited };
+  }
+
+  /** Replace the photo list (and optionally albums/presets) and recompute what is visible. */
+  private setPhotos(photos: PhotoSummary[], extra: Partial<EditorState> = {}) {
+    const f = { filter: this.state.filter, sort: this.state.sort, sortDesc: this.state.sortDesc, ...extra };
+    const visible = queryPhotos(photos, f.filter, f.sort, f.sortDesc).map((p) => p.id);
+    const keep = new Set(photos.map((p) => p.id));
+    this.set({ photos, visible, selection: this.state.selection.filter((id) => keep.has(id)), ...extra });
+  }
+
+  /** Photos imported before library metadata existed: read their EXIF quietly in the background. */
+  private async backfillInfo() {
+    for (const p of this.state.photos) {
+      if (p.info.exif !== undefined) continue;
+      const rec = this.records.get(p.id);
+      if (!rec) continue;
+      const exif = await readExif(rec.original, rec.type, rec.name);
+      this.patchInfo(p.id, { exif });
+    }
+  }
+
+  private markEdited(id: string, params: EditParams) {
+    const edited = !isDefault(params);
+    const cur = this.state.photos.find((p) => p.id === id);
+    if (!cur || cur.edited === edited) return;
+    this.setPhotos(this.state.photos.map((p) => (p.id === id ? { ...p, edited } : p)));
   }
 
   async importFiles(files: File[]) {
@@ -203,8 +268,10 @@ export class EditorStore {
           thumbnail,
         };
         await this.db.putPhoto(rec);
+        const info: PhotoInfo = { ...defaultInfo(rec.id), exif: await readExif(file, file.type, file.name) };
+        await this.db.putInfo(info);
         this.records.set(rec.id, rec);
-        this.set({ photos: [...this.state.photos, this.summarize(rec)] });
+        this.setPhotos([...this.state.photos, this.summarize(rec, info)]);
         lastId = rec.id;
       } catch (e) {
         this.toast(e instanceof Error ? e.message : String(e));
@@ -219,11 +286,12 @@ export class EditorStore {
     this.records.delete(id);
     this.histories.delete(id);
     const photos = this.state.photos.filter((p) => p.id !== id);
-    this.set({ photos });
+    this.setPhotos(photos);
     if (this.state.currentId === id) {
       this.state.image?.bitmap.close();
       this.set({ currentId: null, image: null, history: null, params: DEFAULT_PARAMS, canUndo: false, canRedo: false });
-      if (photos[0]) await this.select(photos[0].id);
+      const next = this.state.visible[0] ?? photos[0]?.id;
+      if (next) await this.select(next);
     }
   }
 
@@ -296,6 +364,8 @@ export class EditorStore {
   jumpTo = (i: number) => { const h = this.h(); if (h) this.setHistory(jumpTo(h, i)); };
 
   // ---------------------------------------------------------------- tools
+  openDialog = (dialog: DialogId) => { if (this.state.currentId) this.set({ dialog }); };
+  closeDialog = () => this.set({ dialog: null });
   setTool = (tool: Tool) => this.set({ tool, eyedropper: false, pickingColor: false });
 
   // ---------------------------------------------------------------- crop / geometry
@@ -496,6 +566,176 @@ export class EditorStore {
   spotSources = () => {
     const img = this.state.image;
     return img ? retouchedPixels(img.pixels, this.state.params.spots).resolved : new Map();
+  };
+
+
+  // ---------------------------------------------------------------- library: info, ratings, albums, filters
+  /** Photos an action applies to: the multi-selection, or just the open photo. */
+  targets = (): string[] => (this.state.selection.length ? this.state.selection : this.state.currentId ? [this.state.currentId] : []);
+
+  private patchInfo(id: string, patch: Partial<PhotoInfo>) {
+    const cur = this.state.photos.find((p) => p.id === id);
+    if (!cur) return;
+    const info = normalizeInfo({ ...cur.info, ...patch }, id);
+    this.setPhotos(this.state.photos.map((p) => (p.id === id ? { ...p, info } : p)));
+    void this.db.putInfo(info);
+  }
+  updateInfo = (id: string, patch: Partial<PhotoInfo>) => this.patchInfo(id, patch);
+
+  /** Setting the value a photo already has clears it (press 3 twice → unrated), like most photo managers. */
+  setRating = (n: number, ids = this.targets()) => {
+    const all = ids.every((id) => this.state.photos.find((p) => p.id === id)?.info.rating === n);
+    for (const id of ids) this.patchInfo(id, { rating: all ? 0 : n });
+  };
+  setFlag = (f: Flag, ids = this.targets()) => {
+    const all = ids.every((id) => this.state.photos.find((p) => p.id === id)?.info.flag === f);
+    for (const id of ids) this.patchInfo(id, { flag: all ? 'none' : f });
+  };
+  setLabel = (l: ColorLabel | null, ids = this.targets()) => {
+    const all = l !== null && ids.every((id) => this.state.photos.find((p) => p.id === id)?.info.label === l);
+    for (const id of ids) this.patchInfo(id, { label: all ? null : l });
+  };
+
+  // albums
+  createAlbum = async (name: string): Promise<string | null> => {
+    const n = name.trim();
+    if (!n) return null;
+    const a: AlbumRecord = { id: crypto.randomUUID(), name: n, createdAt: Date.now() };
+    await this.db.putAlbum(a);
+    this.set({ albums: [...this.state.albums, a] });
+    return a.id;
+  };
+  renameAlbum = async (id: string, name: string) => {
+    const a = this.state.albums.find((x) => x.id === id), n = name.trim();
+    if (!a || !n) return;
+    const next = { ...a, name: n };
+    await this.db.putAlbum(next);
+    this.set({ albums: this.state.albums.map((x) => (x.id === id ? next : x)) });
+  };
+  deleteAlbum = async (id: string) => {
+    await this.db.deleteAlbum(id);
+    const f = this.state.filter.albumId === id ? { ...this.state.filter, albumId: null } : this.state.filter;
+    for (const p of this.state.photos) if (p.info.albumIds.includes(id)) this.patchInfo(p.id, { albumIds: p.info.albumIds.filter((a) => a !== id) });
+    this.set({ albums: this.state.albums.filter((a) => a.id !== id) });
+    this.setFilter(f);
+  };
+  addToAlbum = (albumId: string, ids = this.targets()) => {
+    for (const id of ids) { const p = this.state.photos.find((x) => x.id === id); if (p && !p.info.albumIds.includes(albumId)) this.patchInfo(id, { albumIds: [...p.info.albumIds, albumId] }); }
+  };
+  removeFromAlbum = (albumId: string, ids = this.targets()) => {
+    for (const id of ids) { const p = this.state.photos.find((x) => x.id === id); if (p?.info.albumIds.includes(albumId)) this.patchInfo(id, { albumIds: p.info.albumIds.filter((a) => a !== albumId) }); }
+  };
+
+  // filter / sort / selection
+  setFilter = (f: LibraryFilter) => this.setPhotos(this.state.photos, { filter: f });
+  patchFilter = (patch: Partial<LibraryFilter>) => this.setFilter({ ...this.state.filter, ...patch });
+  clearFilter = () => this.setFilter(NO_FILTER);
+  setSort = (sort: SortKey, desc = sort === 'rating') => this.setPhotos(this.state.photos, { sort, sortDesc: desc });
+  toggleSortDirection = () => this.setPhotos(this.state.photos, { sortDesc: !this.state.sortDesc });
+  /** Filmstrip click: plain = open; Ctrl/Cmd = toggle in selection; Shift = range from the open photo. */
+  clickPhoto = (id: string, mod: { ctrl?: boolean; shift?: boolean } = {}) => {
+    const { visible, selection, currentId } = this.state;
+    if (mod.shift && currentId) {
+      const a = visible.indexOf(currentId), b = visible.indexOf(id);
+      if (a >= 0 && b >= 0) { this.set({ selection: visible.slice(Math.min(a, b), Math.max(a, b) + 1) }); return; }
+    }
+    if (mod.ctrl) {
+      const base = selection.length ? selection : currentId ? [currentId] : [];
+      this.set({ selection: base.includes(id) ? base.filter((x) => x !== id) : [...base, id] });
+      return;
+    }
+    this.set({ selection: [] });
+    void this.select(id);
+  };
+  selectAllVisible = () => this.set({ selection: [...this.state.visible] });
+  clearSelection = () => this.set({ selection: [] });
+  /** Open the next/previous photo in the filtered, sorted list. */
+  step = (d: 1 | -1) => {
+    const { visible, currentId } = this.state;
+    const i = currentId ? visible.indexOf(currentId) : -1;
+    const next = visible[i < 0 ? 0 : i + d];
+    if (next) void this.select(next);
+  };
+
+  // ---------------------------------------------------------------- batch edits on any photo (open or not)
+  private async historyFor(id: string): Promise<EditHistory> {
+    let h = this.histories.get(id);
+    if (!h) {
+      const saved = await this.db.getEdits(id);
+      h = createHistory(normalizeParams(saved?.edits), saved ? 'Saved edits' : 'Original');
+      this.histories.set(id, h);
+    }
+    return h;
+  }
+  /** One undoable edit on each photo. The open photo goes through the normal path; others are saved straight away. */
+  async editPhotos(ids: string[], fn: (p: EditParams) => EditParams, label: string) {
+    for (const id of ids) {
+      const h = await this.historyFor(id);
+      const next = applyEdit(h, fn, label);
+      if (id === this.state.currentId) { this.setHistory(next); continue; }
+      this.histories.set(id, next);
+      await this.db.putEdits({ photoId: id, version: EDIT_SCHEMA_VERSION, edits: present(next), updatedAt: Date.now() });
+      this.markEdited(id, present(next));
+    }
+  }
+
+  // ---------------------------------------------------------------- presets and copy / paste settings
+  allPresets = (): Preset[] => [...BUILTIN_PRESETS, ...this.state.userPresets.map((u) => ({ id: u.id, name: u.name, group: u.group, data: u.data }))];
+  applyPresetTo = async (preset: Preset, ids = this.targets()) => {
+    await this.editPhotos(ids, (p) => applyPreset(p, preset.data), `Preset: ${preset.name}`);
+    if (ids.length > 1) this.toast(`Applied “${preset.name}” to ${ids.length} photos.`);
+  };
+  saveUserPreset = async (name: string, groups: GroupId[]): Promise<boolean> => {
+    const n = name.trim();
+    if (!n || !groups.length) return false;
+    const rec: PresetRecord = { id: crypto.randomUUID(), name: n, group: 'User Presets', createdAt: Date.now(), data: extractPreset(this.state.params, groups) };
+    await this.db.putPreset(rec);
+    this.set({ userPresets: [...this.state.userPresets, rec] });
+    return true;
+  };
+  deleteUserPreset = async (id: string) => {
+    await this.db.deletePreset(id);
+    this.set({ userPresets: this.state.userPresets.filter((p) => p.id !== id) });
+  };
+  /** Presets as a JSON document (user presets only). */
+  exportUserPresets = (): string => JSON.stringify({ roomlightPresets: 1, presets: this.state.userPresets.map(({ name, group, data }) => ({ name, group, data })) }, null, 2);
+  importPresets = async (text: string): Promise<number> => {
+    let doc: { presets?: { name?: unknown; group?: unknown; data?: unknown }[] };
+    try { doc = JSON.parse(text); } catch { this.toast('That file is not valid JSON, so no presets were imported.'); return 0; }
+    const list = Array.isArray(doc?.presets) ? doc.presets : [];
+    const added: PresetRecord[] = [];
+    for (const x of list.slice(0, 200)) {
+      const data = sanitizePreset(x?.data);
+      if (!data || typeof x.name !== 'string' || !x.name.trim()) continue;
+      const rec: PresetRecord = { id: crypto.randomUUID(), name: x.name.trim().slice(0, 80), group: 'User Presets', createdAt: Date.now() + added.length, data };
+      await this.db.putPreset(rec);
+      added.push(rec);
+    }
+    if (added.length) this.set({ userPresets: [...this.state.userPresets, ...added] });
+    this.toast(added.length ? `Imported ${added.length} preset${added.length > 1 ? 's' : ''}.` : 'No valid presets were found in that file.');
+    return added.length;
+  };
+
+  copySettings = (groups: GroupId[] = DEFAULT_GROUPS) => {
+    const id = this.state.currentId;
+    if (!id || !groups.length) return;
+    const from = this.state.photos.find((p) => p.id === id)?.name ?? '';
+    this.set({ clipboard: { groups, data: extractPreset(this.state.params, groups), from } });
+  };
+  /** Paste the copied groups (optionally only some of them) onto the targets. */
+  pasteSettings = async (only?: GroupId[], ids = this.targets()) => {
+    const c = this.state.clipboard;
+    if (!c) return this.toast('Nothing copied yet. Use Copy settings first.');
+    await this.editPhotos(ids, (p) => applyPreset(p, c.data, only), 'Paste Settings');
+    if (ids.length > 1) this.toast(`Pasted settings onto ${ids.length} photos.`);
+  };
+  resetPhotos = async (ids = this.targets()) => { await this.editPhotos(ids, () => ({ ...DEFAULT_PARAMS, curves: normalizeParams({}).curves }), 'Reset All'); };
+
+  /** Auto tone from the histogram of the unedited photo (see image-engine/autoTone.ts). */
+  autoTone = () => {
+    const h = this.h(), img = this.state.image;
+    if (!h || !img) return;
+    this.setHistory(setParams(h, autoTone(img.analysis), 'Auto Tone'));
   };
 
   toggleOriginal = (v?: boolean) => this.set({ showOriginal: v ?? !this.state.showOriginal });

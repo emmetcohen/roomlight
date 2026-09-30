@@ -7,6 +7,8 @@ import { store } from '../editor/store';
 export interface Shortcut {
   id: string;
   label: string;
+  /** How the key is shown in the help list (defaults to the first binding). */
+  display?: string;
   /** Normalised combos: optional "mod+" (Ctrl/Cmd), "shift+", then a lowercase key. */
   keys: string[];
   run: () => unknown;
@@ -27,16 +29,20 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'mask-linear', label: 'New linear gradient', keys: ['l'], run: () => store.getState().tool === 'mask' && store.createMask('linear') },
   { id: 'mask-radial', label: 'New radial gradient', keys: ['r'], run: () => store.getState().tool === 'mask' && store.createMask('radial') },
   { id: 'done', label: 'Leave crop / masking / retouch', keys: ['escape'], run: () => store.getState().tool !== 'edit' && store.setTool('edit') },
-  { id: 'next', label: 'Next photo', keys: ['arrowright'], run: () => step(1) },
-  { id: 'prev', label: 'Previous photo', keys: ['arrowleft'], run: () => step(-1) },
+  { id: 'next', label: 'Next photo', keys: ['arrowright'], run: () => store.step(1) },
+  { id: 'prev', label: 'Previous photo', keys: ['arrowleft'], run: () => store.step(-1) },
+  { id: 'rate', label: 'Rate (0 clears)', display: '0–5', keys: ['1', '2', '3', '4', '5', '0'], run: () => undefined },
+  { id: 'pick', label: 'Pick', keys: ['p'], run: () => store.setFlag('pick') },
+  { id: 'reject', label: 'Reject', keys: ['x'], run: () => store.setFlag('reject') },
+  { id: 'unflag', label: 'Clear flag', keys: ['u'], run: () => store.setFlag('none', store.targets()) },
+  { id: 'label', label: 'Color label', display: '6–9', keys: ['6', '7', '8', '9'], run: () => undefined },
+  { id: 'copy-settings', label: 'Copy settings…', keys: ['mod+shift+c'], run: () => store.openDialog('copy') },
+  { id: 'paste-settings', label: 'Paste settings…', keys: ['mod+shift+v'], run: () => store.openDialog('paste') },
+  { id: 'select-all', label: 'Select all shown photos', keys: ['mod+a'], run: () => store.selectAllVisible() },
+  { id: 'export', label: 'Export…', keys: ['mod+shift+e'], run: () => store.openDialog('export') },
 ];
 
-function step(d: number) {
-  const { photos, currentId } = store.getState();
-  const i = photos.findIndex((p) => p.id === currentId);
-  const next = photos[i + d];
-  if (next) void store.select(next.id);
-}
+const LABEL_KEYS: Record<string, 'red' | 'yellow' | 'green' | 'blue'> = { '6': 'red', '7': 'yellow', '8': 'green', '9': 'blue' };
 
 export function comboOf(e: KeyboardEvent): string {
   const parts: string[] = [];
@@ -54,6 +60,9 @@ export function installShortcuts(): () => void {
     // Arrow keys on a focused slider belong to the slider.
     if (t?.tagName === 'INPUT' && e.key.startsWith('Arrow')) return;
     const combo = comboOf(e);
+    if (store.getState().dialog) return; // dialogs own the keyboard
+    if (/^[0-5]$/.test(combo)) { e.preventDefault(); store.setRating(Number(combo)); return; }
+    if (combo in LABEL_KEYS) { e.preventDefault(); store.setLabel(LABEL_KEYS[combo]); return; }
     const hit = SHORTCUTS.find((s) => s.keys.includes(combo));
     if (!hit) return;
     e.preventDefault();

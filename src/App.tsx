@@ -7,6 +7,9 @@ import { Filmstrip } from './editor/Filmstrip';
 import { Histogram } from './editor/Histogram';
 import { HistoryPanel } from './editor/HistoryPanel';
 import { Viewer } from './editor/Viewer';
+import { InfoPanel } from './editor/InfoPanel';
+import { LibraryPanel } from './editor/LibraryPanel';
+import { CopyDialog, PasteDialog, SavePresetDialog } from './editor/SettingsDialogs';
 import { store, useEditor } from './editor/store';
 import { SHORTCUTS, installShortcuts } from './utils/shortcuts';
 
@@ -22,8 +25,12 @@ export default function App() {
   const messages = useEditor((s) => s.messages);
   const params = useEditor((s) => s.params);
   const tool = useEditor((s) => s.tool);
+  const dialog = useEditor((s) => s.dialog);
+  const clipboard = useEditor((s) => s.clipboard);
+  const selectionCount = useEditor((s) => s.selection.length);
+  const [leftTab, setLeftTab] = useState<'library' | 'info' | 'history'>('library');
   const edited = store.isEdited();
-  void params;
+  void params; void selectionCount;
 
   useEffect(() => {
     void store.init();
@@ -56,17 +63,25 @@ export default function App() {
         <div className="spacer" />
         <button onClick={store.undo} disabled={!canUndo} title="Undo (Ctrl/Cmd+Z)">Undo</button>
         <button onClick={store.redo} disabled={!canRedo} title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+        <button disabled={!current} onClick={() => store.openDialog('copy')} title="Copy settings… (Ctrl/Cmd+Shift+C)">Copy</button>
+        <button disabled={!current || !clipboard} onClick={() => store.openDialog('paste')} title="Paste settings… (Ctrl/Cmd+Shift+V)">Paste</button>
         <button className={showOriginal ? 'on' : ''} disabled={!current} onClick={() => store.toggleOriginal()} title="Before / after ( \ )">Before</button>
         <button disabled={!edited} onClick={store.resetAll} title="Reset all edits">Reset All</button>
         {current && <button className="danger" onClick={() => { if (confirm(`Remove “${current.name}” and its edits from the library? The file on your disk is not touched.`)) void store.removePhoto(current.id); }}>Remove</button>}
       </header>
 
       <aside className="left">
-        <h3>History</h3>
-        <HistoryPanel />
+        <div className="seg wide left-tabs" role="tablist" aria-label="Sidebar">
+          {([['library', 'Library'], ['info', 'Info'], ['history', 'History']] as const).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={leftTab === id} data-left-tab={id} className={leftTab === id ? 'on' : ''} onClick={() => setLeftTab(id)}>{label}</button>
+          ))}
+        </div>
+        {leftTab === 'library' && <LibraryPanel />}
+        {leftTab === 'info' && <InfoPanel />}
+        {leftTab === 'history' && <HistoryPanel />}
         <h3>Shortcuts</h3>
         <ul className="shortcuts">
-          {SHORTCUTS.map((s) => <li key={s.id}><span>{s.label}</span><kbd>{s.keys[0].replace('mod', '⌘/Ctrl').replace('arrowright', '→').replace('arrowleft', '←')}</kbd></li>)}
+          {SHORTCUTS.map((s) => <li key={s.id}><span>{s.label}</span><kbd>{(s.display ?? s.keys[0]).replace('mod', '⌘/Ctrl').replace('arrowright', '→').replace('arrowleft', '←')}</kbd></li>)}
         </ul>
       </aside>
 
@@ -96,6 +111,9 @@ export default function App() {
 
       <footer className="bottom"><Filmstrip /></footer>
 
+      {dialog === 'copy' && <CopyDialog />}
+      {dialog === 'paste' && <PasteDialog />}
+      {dialog === 'savePreset' && <SavePresetDialog />}
       <div className="toasts">
         {messages.map((m, i) => <div className="toast" key={i} role="alert" onClick={() => store.dismissMessage(i)}>{m}</div>)}
       </div>

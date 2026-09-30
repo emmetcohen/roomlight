@@ -6,6 +6,7 @@ import { GeometryPanel, LensPanel } from './CropPanel';
 import { CurveEditor } from './CurveEditor';
 import { GradingPanel } from './GradingPanel';
 import { MixerPanel } from './MixerPanel';
+import { PresetsPanel } from './PresetsPanel';
 import { store, useEditor } from './store';
 
 const BASIC: SectionId[] = ['whiteBalance', 'tone', 'presence', 'color'];
@@ -18,12 +19,18 @@ export function EditPanels() {
   const reset = (id: SectionId) => ({ onReset: () => store.resetSection(id), resetDisabled: id === 'curve' ? curvesAreIdentity(params.curves) : isDefault(params, keysOfSection(id)) });
   return (
     <>
+      <PresetsPanel />
       {BASIC.map((id) => (
         <Panel key={id} title={sectionLabel(id)} {...reset(id)}>
           {id === 'whiteBalance' && (
             <div className="wb-tools">
               <button className={`tool${eyedropper ? ' on' : ''}`} onClick={() => store.toggleEyedropper()} title="Click a neutral grey/white area of the photo">◉ Pick neutral</button>
               <button className="tool" onClick={store.autoWhiteBalance} title="Estimate from the image (grey-world)">Auto</button>
+            </div>
+          )}
+          {id === 'tone' && (
+            <div className="wb-tools">
+              <button className="tool" data-testid="auto-tone" onClick={store.autoTone} title="Set exposure, contrast, highlights, shadows, whites and blacks from the photo's histogram (a heuristic, not AI)">Auto tone</button>
             </div>
           )}
           {SLIDERS.filter((s) => s.section === id).map((s) => <Slider key={s.key} param={s.key} />)}
