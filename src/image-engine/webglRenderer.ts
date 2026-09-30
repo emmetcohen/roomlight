@@ -13,21 +13,32 @@
 import { BLUR_FRAGMENT, DOWNSAMPLE_FRAGMENT, VERTEX_SHADER, buildFragmentShader, derivedToUniforms, type ShaderOutput, type ShaderSource, type Uniform } from './glsl';
 import { DEFAULT_PIPELINE, type StageId } from './pipeline';
 import { LUT_SIZE } from './curves';
-import { derive, lutFor } from './derive';
+import { derive, lutFor, type Derived } from './derive';
 import { outputSize } from '../geometry/transform';
 import { RASTER_SIZE } from '../masks/brush';
 import { MAX_RASTERS } from '../masks/types';
 import type { EditParams } from './params';
 
+/**
+ * A window onto the output picture, for zoomed views. The output picture has a VIRTUAL size
+ * (vw × vh, e.g. its size at 100 %); `region` = [x, y, w, h] is the part of it (output uv, y down)
+ * that fills the canvas. Every effect is a function of output position, so a window shows exactly
+ * what a full-size render would show there. Neighbourhood effects (texture, clarity, dehaze) take
+ * their blur fields from a whole-picture render at fw × fh (≤ a few thousand px), which keeps them
+ * consistent across the window without rendering the whole picture at full size.
+ */
+export interface ViewWindow { vw: number; vh: number; region: [number, number, number, number]; fw: number; fh: number }
+
 export interface RenderOptions {
   showClipping?: boolean;
   /** Index into params.masks of the mask to tint red (the masking tool's overlay). */
   overlayMask?: number;
+  view?: ViewWindow;
 }
 export interface Readback { data: Uint8Array; width: number; height: number } // RGBA8, bottom row first (GL convention)
 
 interface Target { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number }
-interface Slot { a: Target | null; down: (Target | null)[]; tmp: (Target | null)[]; blur: (Target | null)[] }
+interface Slot { a: Target | null; aFull: Target | null; fullKey: { params: EditParams; tex: WebGLTexture; fw: number; fh: number } | null; down: (Target | null)[]; tmp: (Target | null)[]; blur: (Target | null)[] }
 interface Program { prog: WebGLProgram; locs: Map<string, WebGLUniformLocation | null> }
 
 const UNIT = { tex: 0, lut: 1, a: 2, blur0: 3, blur1: 4, blur2: 5 } as const;
@@ -238,34 +249,9 @@ export class WebGLRenderer {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  private run(params: EditParams, w: number, h: number, dest: WebGLFramebuffer | null, slot: Slot, clip: boolean, overlayMask = -1) {
-    if (!this.tex) return;
+  /** Downsample + Gaussian blur the three fields from a float image (of size w × h) into slot.blur[0..2]. */
+  private buildBlurFields(slot: Slot, source: Target, d: Derived, w: number, h: number) {
     const gl = this.gl;
-    const d = derive(params, w, h, { w: this.imageSize.width, h: this.imageSize.height });
-    this.uploadLut(lutFor(params));
-    this.uploadRasters(d.masks.rasters);
-    const u = derivedToUniforms(d, overlayMask >= 0 ? d.masks.source.indexOf(overlayMask) : -1);
-    const useLocal = d.active.local && this.supportsLocal && this.order.includes('local');
-    const order = this.order;
-
-    if (!useLocal) {
-      const stages = order.filter((s) => s !== 'local');
-      const p = this.stageProgram(stages, 'texture', 'display');
-      this.bind({ tex: this.tex, lut: this.lutTex });
-      this.setUniforms(p, u, clip);
-      this.draw(dest, w, h);
-      return;
-    }
-
-    const li = order.indexOf('local');
-    // Pass 1: everything before `local` -> A (linear float)
-    const a = (slot.a = this.floatTarget(slot.a, w, h));
-    const p1 = this.stageProgram(order.slice(0, li), 'texture', 'float');
-    this.bind({ tex: this.tex, lut: this.lutTex });
-    this.setUniforms(p1, u, false);
-    this.draw(a.fbo, w, h);
-
-    // Blur fields
     const down = this.program('down', () => DOWNSAMPLE_FRAGMENT);
     const blurP = this.program('blur', () => BLUR_FRAGMENT);
     for (let i = 0; i < 3; i++) {
@@ -274,7 +260,7 @@ export class WebGLRenderer {
       const tm = (slot.tmp[i] = this.floatTarget(slot.tmp[i], spec.lw, spec.lh));
       const bl = (slot.blur[i] = this.floatTarget(slot.blur[i], spec.lw, spec.lh));
       gl.useProgram(down.prog);
-      this.bind({ a: a.tex });
+      this.bind({ a: source.tex });
       gl.uniform1i(this.loc(down, 'u_a'), UNIT.a);
       gl.uniform1i(this.loc(down, 'u_mode'), i < 2 ? 0 : 1);
       gl.uniform1i(this.loc(down, 'u_factor'), spec.factor);
@@ -290,6 +276,51 @@ export class WebGLRenderer {
         this.draw(dst.fbo, spec.lw, spec.lh);
       }
     }
+  }
+
+  private run(params: EditParams, w: number, h: number, dest: WebGLFramebuffer | null, slot: Slot, clip: boolean, overlayMask = -1, view?: ViewWindow) {
+    if (!this.tex) return;
+    const src = { w: this.imageSize.width, h: this.imageSize.height };
+    // Without a view, the drawn size IS the virtual size. With one, the virtual size is the picture's size at the zoom level.
+    const d = derive(params, view?.vw ?? w, view?.vh ?? h, src, view ? { w: view.fw, h: view.fh } : { w, h });
+    this.uploadLut(lutFor(params));
+    this.uploadRasters(d.masks.rasters);
+    const overlay = overlayMask >= 0 ? d.masks.source.indexOf(overlayMask) : -1;
+    const u = derivedToUniforms(d, overlay, view?.region);
+    const useLocal = d.active.local && this.supportsLocal && this.order.includes('local');
+    const order = this.order;
+
+    if (!useLocal) {
+      const stages = order.filter((s) => s !== 'local');
+      const p = this.stageProgram(stages, 'texture', 'display');
+      this.bind({ tex: this.tex, lut: this.lutTex });
+      this.setUniforms(p, u, clip);
+      this.draw(dest, w, h);
+      return;
+    }
+
+    const li = order.indexOf('local');
+    const p1 = this.stageProgram(order.slice(0, li), 'texture', 'float');
+    this.bind({ tex: this.tex, lut: this.lutTex });
+
+    if (view) {
+      // Blur fields from a whole-picture render (cached until the edit, the source or the size changes)
+      const k = slot.fullKey;
+      if (!slot.aFull || !k || k.params !== params || k.tex !== this.tex || k.fw !== view.fw || k.fh !== view.fh) {
+        const af = (slot.aFull = this.floatTarget(slot.aFull, view.fw, view.fh));
+        this.setUniforms(p1, derivedToUniforms(d, -1), false);
+        this.draw(af.fbo, view.fw, view.fh);
+        this.buildBlurFields(slot, af, d, view.fw, view.fh);
+        slot.fullKey = { params, tex: this.tex, fw: view.fw, fh: view.fh };
+      }
+    }
+
+    // Pass 1: everything before `local` -> A (linear float) for the window being drawn
+    const a = (slot.a = this.floatTarget(slot.a, w, h));
+    this.bind({ tex: this.tex, lut: this.lutTex });
+    this.setUniforms(p1, u, false);
+    this.draw(a.fbo, w, h);
+    if (!view) this.buildBlurFields(slot, a, d, w, h);
 
     // Pass 2: `local` and everything after, reading A + blur fields
     const p2 = this.stageProgram(order.slice(li), 'float', 'display');
@@ -301,13 +332,23 @@ export class WebGLRenderer {
   /** Render to the canvas' default framebuffer (canvas pixel size = drawing size). */
   render(params: EditParams, opts: RenderOptions = {}): void {
     const gl = this.gl;
-    this.run(params, gl.drawingBufferWidth, gl.drawingBufferHeight, null, this.slots.display, !!opts.showClipping, opts.overlayMask ?? -1);
+    this.run(params, gl.drawingBufferWidth, gl.drawingBufferHeight, null, this.slots.display, !!opts.showClipping, opts.overlayMask ?? -1, opts.view);
+  }
+
+  /** Largest texture / render target edge this GPU supports. */
+  get maxSize(): number {
+    return Math.min(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as number, this.gl.getParameter(this.gl.MAX_RENDERBUFFER_SIZE) as number);
   }
 
   /** Render into an offscreen RGBA8 target whose long edge is ≤ maxDim and read the pixels. */
   readback(params: EditParams, maxDim = 256): Readback {
-    const gl = this.gl;
     const { w, h } = outputSize(params, this.imageSize.width, this.imageSize.height, maxDim);
+    return this.readbackSize(params, w, h);
+  }
+
+  /** Render the whole output picture at exactly w × h (any size, up or down) and read it back (RGBA8, bottom row first). Used by export. */
+  readbackSize(params: EditParams, w: number, h: number): Readback {
+    const gl = this.gl;
     if (!this.readFbo || this.readFbo.w !== w || this.readFbo.h !== h) {
       if (this.readFbo) { gl.deleteTexture(this.readFbo.tex); gl.deleteFramebuffer(this.readFbo.fbo); }
       const t = this.makeTarget(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
@@ -326,7 +367,7 @@ export class WebGLRenderer {
     if (this.tex) gl.deleteTexture(this.tex);
     if (this.lutTex) gl.deleteTexture(this.lutTex);
     if (this.brushTex) gl.deleteTexture(this.brushTex);
-    for (const s of Object.values(this.slots)) for (const t of [s.a, ...s.down, ...s.tmp, ...s.blur]) if (t) this.freeTarget(t);
+    for (const s of Object.values(this.slots)) for (const t of [s.a, s.aFull, ...s.down, ...s.tmp, ...s.blur]) if (t) this.freeTarget(t);
     if (this.readFbo) { gl.deleteTexture(this.readFbo.tex); gl.deleteFramebuffer(this.readFbo.fbo); }
     for (const p of this.programs.values()) gl.deleteProgram(p.prog);
     this.tex = this.lutTex = null;
@@ -335,5 +376,5 @@ export class WebGLRenderer {
 }
 
 function emptySlot(): Slot {
-  return { a: null, down: [null, null, null], tmp: [null, null, null], blur: [null, null, null] };
+  return { a: null, aFull: null, fullKey: null, down: [null, null, null], tmp: [null, null, null], blur: [null, null, null] };
 }

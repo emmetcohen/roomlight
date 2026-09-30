@@ -61,6 +61,8 @@ export interface Derived {
   vib: number;
   local: LocalTables;
   blur: [BlurSpec, BlurSpec, BlurSpec];
+  /** Size of the image the blur fields are computed from (== w, h unless a zoomed view borrows them from a whole-picture render). */
+  blurSize: { w: number; h: number };
   lut: Float32Array;
   mixer: MixerTables;
   grade: GradeTables;
@@ -75,7 +77,12 @@ export function lutFor(p: EditParams): Float32Array {
   return l;
 }
 
-export function derive(p: EditParams, w: number, h: number, src: { w: number; h: number } = { w, h }): Derived {
+/**
+ * `w`,`h` is the VIRTUAL output size: everything measured as a fraction of the picture (vignette
+ * aspect, grain cell, blur radii) is relative to it. `blurSize` is the size of the image the blur
+ * fields are computed from; it differs from (w, h) only for zoomed views.
+ */
+export function derive(p: EditParams, w: number, h: number, src: { w: number; h: number } = { w, h }, blurSize: { w: number; h: number } = { w, h }): Derived {
   const mixer: MixerTables = { hue: [], sat: [], lum: [] };
   for (const c of MIX_COLORS) {
     mixer.hue.push(p[`mix_${c}_hue`] / 100);
@@ -129,7 +136,8 @@ export function derive(p: EditParams, w: number, h: number, src: { w: number; h:
     sat: p.saturation / 100,
     vib: p.vibrance / 100,
     local,
-    blur: blurPlan(w, h),
+    blur: blurPlan(blurSize.w, blurSize.h),
+    blurSize,
     lut: lutFor(p),
     mixer,
     grade,

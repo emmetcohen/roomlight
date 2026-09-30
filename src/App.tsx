@@ -9,6 +9,7 @@ import { HistoryPanel } from './editor/HistoryPanel';
 import { Viewer } from './editor/Viewer';
 import { InfoPanel } from './editor/InfoPanel';
 import { LibraryPanel } from './editor/LibraryPanel';
+import { ExportDialog } from './editor/ExportDialog';
 import { CopyDialog, PasteDialog, SavePresetDialog } from './editor/SettingsDialogs';
 import { store, useEditor } from './editor/store';
 import { SHORTCUTS, installShortcuts } from './utils/shortcuts';
@@ -65,6 +66,7 @@ export default function App() {
         <button onClick={store.redo} disabled={!canRedo} title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
         <button disabled={!current} onClick={() => store.openDialog('copy')} title="Copy settings… (Ctrl/Cmd+Shift+C)">Copy</button>
         <button disabled={!current || !clipboard} onClick={() => store.openDialog('paste')} title="Paste settings… (Ctrl/Cmd+Shift+V)">Paste</button>
+        <button className="primary-sm" disabled={!current} data-testid="open-export" onClick={() => store.openDialog('export')} title="Export… (Ctrl/Cmd+Shift+E)">Export…</button>
         <button className={showOriginal ? 'on' : ''} disabled={!current} onClick={() => store.toggleOriginal()} title="Before / after ( \ )">Before</button>
         <button disabled={!edited} onClick={store.resetAll} title="Reset all edits">Reset All</button>
         {current && <button className="danger" onClick={() => { if (confirm(`Remove “${current.name}” and its edits from the library? The file on your disk is not touched.`)) void store.removePhoto(current.id); }}>Remove</button>}
@@ -114,6 +116,7 @@ export default function App() {
       {dialog === 'copy' && <CopyDialog />}
       {dialog === 'paste' && <PasteDialog />}
       {dialog === 'savePreset' && <SavePresetDialog />}
+      {dialog === 'export' && <ExportDialog />}
       <div className="toasts">
         {messages.map((m, i) => <div className="toast" key={i} role="alert" onClick={() => store.dismissMessage(i)}>{m}</div>)}
       </div>

@@ -4,6 +4,7 @@ import { renderImage } from '../image-engine/pipeline';
 import { linearToOklab } from '../image-engine/oklab';
 import { srgbToLinear } from '../color/colorSpace';
 import { WebGLRenderer } from '../image-engine/webglRenderer';
+import { outputSize } from '../geometry/transform';
 
 const W = 96, H = 72;
 
@@ -42,7 +43,9 @@ function resolve(c: Record<string, unknown>): Record<string, unknown> {
   return c;
 }
 
-(window as unknown as Record<string, unknown>).runParity = (cases: Record<string, unknown>[]) => {
+let shared: { src: Uint8ClampedArray; gl: WebGLRenderer } | null = null;
+function setup() {
+  if (shared) return shared;
   const src = makeSource();
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -50,6 +53,42 @@ function resolve(c: Record<string, unknown>): Record<string, unknown> {
   const gl = new WebGLRenderer(document.getElementById('c') as HTMLCanvasElement);
   gl.setImage(canvas);
   gl.useMipmaps(false);
+  return (shared = { src, gl });
+}
+
+/**
+ * A window onto the picture must show what the full render shows there: draw the middle half of
+ * the output through a ViewWindow and compare with the same pixels of the full render.
+ * `fw` is the size of the whole-picture render that supplies the blur fields (W = exact).
+ */
+(window as unknown as Record<string, unknown>).runViewParity = (cases: Record<string, unknown>[], fwFraction: number) => {
+  const { gl } = setup();
+  const canvas = document.getElementById('c') as HTMLCanvasElement;
+  const out: Record<string, unknown>[] = [];
+  for (const raw of cases) {
+    const c = resolve(JSON.parse(JSON.stringify(raw)));
+    const p: EditParams = normalizeParams({ ...DEFAULT_PARAMS, ...c });
+    const full = gl.readbackSize(p, ...(Object.values(outSize(p)) as [number, number]));
+    const { w: ow, h: oh } = outSize(p);
+    if (ow % 4 || oh % 4) continue;
+    canvas.width = ow / 2; canvas.height = oh / 2;
+    gl.render(p, { view: { vw: ow, vh: oh, region: [0.25, 0.25, 0.5, 0.5], fw: Math.round(ow * fwFraction), fh: Math.round(oh * fwFraction) } });
+    const g = gl.gl, win = new Uint8Array((ow / 2) * (oh / 2) * 4);
+    g.bindFramebuffer(g.FRAMEBUFFER, null);
+    g.readPixels(0, 0, ow / 2, oh / 2, g.RGBA, g.UNSIGNED_BYTE, win);
+    let max = 0, sum = 0, n = 0;
+    for (let j = 0; j < oh / 2; j++) for (let i = 0; i < ow / 2; i++) for (let k = 0; k < 4; k++) {
+      const a = win[(j * (ow / 2) + i) * 4 + k], b = full.data[((oh / 4 + j) * ow + (ow / 4 + i)) * 4 + k];
+      const d = Math.abs(a - b); max = Math.max(max, d); sum += d; n++;
+    }
+    out.push({ params: raw, maxDiff: max, meanDiff: sum / n, size: [ow, oh] });
+  }
+  return out;
+};
+const outSize = (p: EditParams) => { const o = outputSize(p, W, H); return { w: o.w, h: o.h }; };
+
+(window as unknown as Record<string, unknown>).runParity = (cases: Record<string, unknown>[]) => {
+  const { src, gl } = setup();
   const base = renderImage(src, W, H, DEFAULT_PARAMS);
   return cases.map((raw) => {
     const c = resolve(JSON.parse(JSON.stringify(raw)));

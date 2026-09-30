@@ -2,6 +2,8 @@
 import { createServer } from 'vite';
 import { existsSync, mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const executablePath = process.env.CHROMIUM_PATH || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined);
 mkdirSync('scripts/.out', { recursive: true });
@@ -221,6 +223,144 @@ try {
   await page.locator('.panel-toggle:has-text("Presets")').click();
   check('the saved preset is still listed', (await page.locator('[data-preset="My Dark Fix"]').count()) === 1);
   await page.screenshot({ path: 'scripts/.out/library.png' });
+
+  // ====================================================================== PHASE 7: export
+  const exif = await server.ssrLoadModule('/src/metadata/exif.ts');
+  /** Width/height from a JPEG's SOF marker. */
+  const jpegSize = (b) => { let i = 2; while (i < b.length) { if (b[i] !== 0xff) return null; const m = b[i + 1]; const len = (b[i + 2] << 8) | b[i + 3]; if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { h: (b[i + 5] << 8) | b[i + 6], w: (b[i + 7] << 8) | b[i + 8] }; i += 2 + len; } return null; };
+  const pngSize = (b) => ({ w: b.readUInt32BE(16), h: b.readUInt32BE(20) });
+  const dim = (o) => (o ? `${o.w}x${o.h}` : 'none');
+  const openExport = async () => { await blur(); await page.keyboard.press('Control+Shift+E'); await page.locator('[role=dialog][aria-label=Export]').waitFor(); };
+  const doExport = async () => {
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.locator('[data-testid=export-go]').click()]);
+    const path = `scripts/.out/${dl.suggestedFilename()}`; await dl.saveAs(path);
+    await page.locator('[data-testid=export-done]').waitFor({ timeout: 60000 });
+    return { name: dl.suggestedFilename(), bytes: readFileSync(path), path };
+  };
+  const selectFormat = (v) => page.locator('select[aria-label=Format]').selectOption(v);
+  const closeExport = async () => { await page.locator('.dialog-foot button', { hasText: 'Close' }).click(); await page.waitForTimeout(150); };
+  /** Decode exported bytes in the page and sample a pixel (in export pixel coordinates). */
+  const decodedPixel = (bytes, mime, x, y) => page.evaluate(async ([b64, mime, x, y]) => {
+    const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const bmp = await createImageBitmap(new Blob([u], { type: mime }));
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+    return Array.from(g.getImageData(x, y, 1, 1).data).slice(0, 3);
+  }, [bytes.toString('base64'), mime, x, y]);
+
+  // --- a single JPEG at full size, EXIF kept, location removed (the defaults)
+  await page.locator('[data-photo]').nth(1).click(); await page.waitForTimeout(700); await blur();
+  await page.getByRole('button', { name: 'Reset All' }).click(); await page.waitForTimeout(400); // clean baseline after the Phase 6 edits
+  await openExport();
+  check('export dialog shows the output size', /1200 × 800 px/.test(await page.locator('[data-testid=export-size]').innerText()));
+  check('it warns that this photo carries location data', (await page.locator('.gps-flag').count()) === 1);
+  let r = await doExport();
+  check('file is named from the template', r.name === 'beach-01-edit.jpg', r.name);
+  check('it is a real JPEG at the full native size', r.bytes[0] === 0xff && r.bytes[1] === 0xd8 && dim(jpegSize(r.bytes)) === '1200x800', JSON.stringify(jpegSize(r.bytes)));
+  let ex = exif.parseExif(new Uint8Array(r.bytes));
+  check('EXIF is carried over (camera, lens, exposure) with Orientation reset to 1', ex && ex.model === 'Model One' && ex.lens === '35mm F1.8' && ex.iso === 400 && ex.orientation === 1, JSON.stringify(ex));
+  check('location was removed from the exported file', ex && ex.gps === undefined);
+  check('the export ran in a background worker', /background worker/.test(await page.locator('[data-testid=export-where]').innerText()), await page.locator('[data-testid=export-where]').innerText());
+
+  // --- keep the location
+  await page.locator('label:has-text("Remove location") input').uncheck();
+  r = await doExport(); ex = exif.parseExif(new Uint8Array(r.bytes));
+  check('with "Remove location" off the GPS position is kept', ex?.gps && Math.abs(ex.gps.lat - 48.8584) < 1e-3);
+  await page.locator('label:has-text("Remove location") input').check();
+
+  // --- copyright notice rewrites the EXIF block
+  await page.locator('input[aria-label="Copyright notice"]').fill('(c) 2026 Test Photographer');
+  r = await doExport(); ex = exif.parseExif(new Uint8Array(r.bytes));
+  check('a copyright notice is written into the EXIF', ex?.copyright === '(c) 2026 Test Photographer' && ex.model === 'Model One' && ex.gps === undefined, JSON.stringify(ex));
+  await page.locator('input[aria-label="Copyright notice"]').fill('');
+
+  // --- metadata off
+  await page.locator('select[aria-label=Metadata]').selectOption('none');
+  r = await doExport();
+  check('metadata "None" strips all EXIF', exif.parseExif(new Uint8Array(r.bytes)) === null);
+  await page.locator('select[aria-label=Metadata]').selectOption('original');
+
+  // --- resize + formats
+  await page.locator('select[aria-label=Resize]').selectOption('longEdge');
+  await page.locator('input[aria-label="Long edge in pixels"]').fill('600');
+  check('the dialog previews the resized output', /600 × 400 px/.test(await page.locator('[data-testid=export-size]').innerText()));
+  r = await doExport();
+  check('long-edge resize gives 600 × 400', dim(jpegSize(r.bytes)) === '600x400', JSON.stringify(jpegSize(r.bytes)));
+  await selectFormat('png');
+  r = await doExport();
+  check('PNG export is a real PNG of the right size', r.name.endsWith('.png') && r.bytes.subarray(1, 4).toString() === 'PNG' && dim(pngSize(r.bytes)) === '600x400');
+  check('metadata is disabled for PNG with an explanation', (await page.locator('select[aria-label=Metadata]').isDisabled()) && (await page.getByText('Metadata can only be embedded in JPEG files.').count()) === 1);
+  await selectFormat('webp');
+  r = await doExport();
+  check('WebP export is a real WebP', r.name.endsWith('.webp') && r.bytes.subarray(0, 4).toString() === 'RIFF' && r.bytes.subarray(8, 12).toString() === 'WEBP');
+  await selectFormat('jpeg');
+  await page.locator('select[aria-label=Resize]').selectOption('original');
+
+  // --- edits are baked in: Black & White preset -> exported pixels have no colour
+  await closeExport();
+  await page.locator('[data-left-tab=history]').click();
+  const colorBlock = async (b) => decodedPixel(b, 'image/jpeg', 200, 620);
+  await openExport(); r = await doExport(); const plain = await colorBlock(r.bytes); await closeExport();
+  await page.locator('.panel-toggle:has-text("Presets")').click().catch(() => {});
+  if (!(await page.locator('[data-preset="Neutral"]').isVisible().catch(() => false))) await page.locator('.panel-toggle:has-text("Presets")').click();
+  await page.locator('[data-preset="Neutral"] button').click(); await page.waitForTimeout(500);
+  await openExport(); r = await doExport(); const mono = await colorBlock(r.bytes); await closeExport();
+  check('edits are applied to the exported pixels (B&W preset removes colour)', Math.max(...plain) - Math.min(...plain) > 40 && Math.max(...mono) - Math.min(...mono) < 6, `${plain} -> ${mono}`);
+  await page.keyboard.press('Control+z'); await page.waitForTimeout(300);
+
+  // --- output sharpening: an unsharp mask (luma only) leaves an overshoot "halo" next to a luminance edge (the dark dot's left edge, x = 584)
+  const luma = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+  const ring = async (bytes) => Math.abs(luma(await decodedPixel(bytes, 'image/jpeg', 583, 400)) - luma(await decodedPixel(bytes, 'image/jpeg', 570, 400)));
+  await openExport();
+  r = await doExport(); const ringOff = await ring(r.bytes);
+  await page.locator('select[aria-label="Output sharpening"]').selectOption('high');
+  r = await doExport(); const ringHigh = await ring(r.bytes);
+  check('high output sharpening adds an overshoot halo at edges; off leaves the gradient smooth', ringOff < 4 && ringHigh > ringOff + 8, `halo ${ringOff.toFixed(1)} -> ${ringHigh.toFixed(1)}`);
+  await page.locator('select[aria-label="Output sharpening"]').selectOption('off');
+  await closeExport();
+
+  // --- retouching is included in exports (full-res, from the original file)
+  await page.locator('[data-photo]').nth(0).click(); await page.waitForTimeout(700); await blur();
+  check('the blemish photo is open (spot-free)', dark(await pixelAt(0.5, 0.5)));
+  await page.keyboard.press('q'); await page.locator('[data-spot-kind=remove]').click(); await page.locator('[data-retouch=size] .slider-number').fill('40'); await page.locator('[data-retouch=size] .slider-number').press('Enter'); await blur();
+  await clickAt(0.5, 0.5); await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  await openExport(); r = await doExport(); await closeExport();
+  const dot = await decodedPixel(r.bytes, 'image/jpeg', 600, 400);
+  check('the exported file has the blemish removed', dot[0] + dot[1] + dot[2] > 250, `${dot}`);
+  const origBytes = readFileSync('scripts/.out/retouch.png'); void origBytes;
+
+  // --- a photo larger than the on-screen preview exports at its TRUE size
+  await importPhoto('big-04.jpg', 4); // 1200x800 placeholder to keep the page helper simple; replaced below
+  const bigB64 = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 3600; c.height = 2400; const g = c.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 3600, 2400); gr.addColorStop(0, '#2a6fb0'); gr.addColorStop(1, '#e8b050'); g.fillStyle = gr; g.fillRect(0, 0, 3600, 2400);
+    g.fillStyle = '#000'; for (let i = 0; i < 40; i++) g.fillRect(100 + i * 80, 1200, 2, 600); // 2px lines: only visible at full resolution
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95)); const u = new Uint8Array(await blob.arrayBuffer()); let s = ''; u.forEach((v) => (s += String.fromCharCode(v))); return btoa(s);
+  });
+  await page.setInputFiles('input[type=file]', { name: 'huge-05.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(bigB64, 'base64') });
+  await page.waitForFunction(() => document.querySelector('.file-name')?.textContent?.startsWith('huge-05')); await page.waitForTimeout(900); await blur();
+  await openExport();
+  check('the dialog reports the true full size (3600 × 2400), not the preview size', /3600 × 2400 px/.test(await page.locator('[data-testid=export-size]').innerText()));
+  r = await doExport(); await closeExport();
+  check('a 3600 × 2400 original exports at 3600 × 2400 (full resolution)', dim(jpegSize(r.bytes)) === '3600x2400', JSON.stringify(jpegSize(r.bytes)));
+  const line = await decodedPixel(r.bytes, 'image/jpeg', 101, 1500), gap = await decodedPixel(r.bytes, 'image/jpeg', 140, 1500);
+  check('fine detail survives at full resolution (a 2-px line is still dark)', line[0] + line[1] + line[2] < 200 && gap[0] + gap[1] + gap[2] > 300, `${line} vs ${gap}`);
+
+  // --- batch export as one ZIP, validated by Python's zipfile
+  await blur(); await page.keyboard.press('Control+a');
+  await page.keyboard.press('Control+Shift+E'); await page.locator('[role=dialog][aria-label=Export]').waitFor();
+  await page.locator('select[aria-label=Resize]').selectOption('longEdge'); await page.locator('input[aria-label="Long edge in pixels"]').fill('400');
+  const nPhotos = await page.locator('[data-photo]').count();
+  check('"Selected" is offered and pre-chosen for a multi-selection', (await page.locator('button:has-text("Selected (")').getAttribute('class'))?.includes('on'));
+  r = await doExport();
+  check('a batch is bundled into one ZIP', r.name.endsWith('.zip'), r.name);
+  const py = spawnSync('python3', ['-c', `import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("|".join(sorted(z.namelist())))`, r.path], { encoding: 'utf8' });
+  const names = py.stdout.trim().split('|');
+  check(`Python's zipfile reads the archive (${nPhotos} unique files, CRCs valid)`, py.status === 0 && names.length === nPhotos && new Set(names).size === nPhotos, `${py.stderr.trim()} ${names.join(', ')}`);
+  const zipped = spawnSync('python3', ['-c', `import zipfile,sys,io; z=zipfile.ZipFile(sys.argv[1]); n=[x for x in z.namelist() if x.startswith("beach")][0]; open(sys.argv[2],"wb").write(z.read(n))`, r.path, 'scripts/.out/from-zip.jpg']);
+  const fz = readFileSync('scripts/.out/from-zip.jpg');
+  check('a file taken out of the ZIP is a valid 400 × 267 JPEG with EXIF', zipped.status === 0 && dim(jpegSize(fz)) === '400x267' && exif.parseExif(new Uint8Array(fz))?.model === 'Model One', JSON.stringify(jpegSize(fz)));
+  await closeExport();
+  await page.screenshot({ path: 'scripts/.out/export.png' });
 
   check('no console or page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {

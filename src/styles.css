@@ -189,3 +189,12 @@ button.preset { padding: 2px 8px; font-size: 11px; }
 .dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .group-list { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 4px; } .group-list li { display: flex; flex-direction: column; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+
+/* ---- Phase 7: export */
+.export-form { border: 0; margin: 0; padding: 0; min-width: 0; }
+.exp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; flex-wrap: wrap; } .exp-label { width: 80px; color: var(--muted); flex: none; }
+.exp-row select { min-width: 160px; } .exp-indent { margin-left: 88px; } .exp-row.exp-indent .text { flex: 1; min-width: 120px; }
+.wide-num { width: 76px; } .gps-flag { color: var(--accent); font-weight: 500; }
+.exp-progress { display: flex; align-items: center; gap: 10px; margin-top: 12px; } .exp-progress progress { flex: 1; height: 8px; accent-color: var(--accent); }
+.exp-done { margin-top: 12px; padding: 8px 10px; border: 1px solid #355a3a; background: #1b2a1d; border-radius: 6px; }
+.dialog .slider { margin: 4px 0; } .readout { margin: 4px 0 4px 88px; color: var(--muted); }

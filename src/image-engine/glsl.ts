@@ -31,8 +31,12 @@ void main() {
 
 const COMMON = `
 const vec3 LUMA = vec3(${f(LUMA[0])}, ${f(LUMA[1])}, ${f(LUMA[2])});
-uniform vec2 u_size;
-vec2 g_px;   // output pixel (x, y from the bottom), like the CPU reference
+uniform vec2 u_size;      // VIRTUAL output size: what size-dependent effects (vignette aspect, grain, blur) are measured against
+uniform vec4 u_view;      // region of the output being drawn: offset x, y, scale w, h (output uv, y down). Identity = whole picture
+uniform vec2 u_bsize;     // size of the image the blur fields were computed from
+vec2 g_px;   // physical pixel being drawn (x, y from the bottom)
+vec2 g_uv;   // output uv of this pixel (through u_view)
+vec2 g_vpx;  // pixel of the virtual output (x, y from the bottom), like the CPU reference
 vec2 g_size;
 float srgbToLinear(float v) { return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4); }
 float linearToSrgb(float x) {
@@ -114,7 +118,7 @@ vec2 g_m;                 // mask-space position of this pixel
 float g_rc2;              // squared optical radius / R²
 vec3 g_c0;                // the ORIGINAL colour (linear) at this pixel
 vec3 fetchSource(out float alpha) {
-  vec2 uvo = v_uv;
+  vec2 uvo = g_uv;
   vec2 p;
   bool behind = false;
   if (u_geoOn == 1) {
@@ -122,6 +126,7 @@ vec3 fetchSource(out float alpha) {
     vec3 q = u_geoInv * vec3((g - 0.5) * u_canvas, 1.0);
     if (q.z <= 1e-9) { behind = true; p = vec2(0.0); } else p = q.xy / q.z;
   } else p = (uvo - 0.5) * u_src;
+  if (uvo.x < 0.0 || uvo.y < 0.0 || uvo.x > 1.0 || uvo.y > 1.0) { alpha = 0.0; g_m = vec2(0.0); g_rc2 = 0.0; return vec3(0.0); } // beyond the picture (zoomed-out view)
   g_m = behind ? vec2(0.0) : p / u_maskL;
   g_rc2 = behind ? 0.0 : dot(p, p) / (u_lens.w * u_lens.w);
   if (u_remap == 0) { vec4 s = texture(u_tex, uvo); alpha = s.a; return s.rgb; }
@@ -230,7 +235,7 @@ vec3 stage_masks(vec3 c) {
 uniform vec3 u_local; // texture, clarity, dehaze in [-1, 1]
 uniform sampler2D u_blur0, u_blur1, u_blur2;
 uniform vec3 u_bi0, u_bi1, u_bi2; // (downsample factor, low-res width, low-res height)
-float sampleBlur(sampler2D t, vec3 info) { return texture(t, (g_px + 0.5) / (info.x * info.yz)).r; }
+float sampleBlur(sampler2D t, vec3 info) { return texture(t, (vec2(g_uv.x, 1.0 - g_uv.y) * u_bsize) / (info.x * info.yz)).r; }
 vec3 stage_local(vec3 c) {
   vec3 loc = u_local;
   for (int i = 0; i < ${MAX_MASKS}; i++) {
@@ -324,8 +329,8 @@ vec3 stage_color(vec3 c) { return colorP(c, u_sat, u_vib); }`,
 uniform vec4 u_vig0; // amount, start, width, roundness
 uniform vec2 u_vig1; // highlights, aspect
 vec3 stage_vignette(vec3 c) {
-  float u = (g_px.x + 0.5) / g_size.x;
-  float v = 1.0 - (g_px.y + 0.5) / g_size.y;
+  float u = g_uv.x;
+  float v = g_uv.y;
   float x = (u - 0.5) * 2.0, y = (v - 0.5) * 2.0;
   float r = u_vig0.w;
   if (r > 0.0) {
@@ -356,11 +361,11 @@ float hash2(uvec2 p) {
 }
 float hn(ivec2 i) { return (hash2(uvec2(i)) - 0.5) * 2.0; }
 vec3 stage_grain(vec3 c) {
-  vec2 q = (g_px + 0.5) / u_grain.y;
+  vec2 q = (g_vpx + 0.5) / u_grain.y;
   ivec2 i = ivec2(floor(q));
   vec2 fr = q - vec2(i);
   float soft = 1.5 * (mix(mix(hn(i), hn(i + ivec2(1, 0)), fr.x), mix(hn(i + ivec2(0, 1)), hn(i + ivec2(1, 1)), fr.x), fr.y));
-  float fine = hn(ivec2(floor(g_px)));
+  float fine = hn(ivec2(g_vpx));
   float n = soft + (fine - soft) * u_grain.z;
   float vc = clamp(linearToSrgb(dot(c, LUMA)), 0.0, 1.0);
   float weight = 0.25 + 0.75 * 4.0 * vc * (1.0 - vc);
@@ -413,6 +418,8 @@ ${defs}
 void main() {
   g_px = floor(gl_FragCoord.xy);
   g_size = u_size;
+  g_uv = u_view.xy + v_uv * u_view.zw;
+  g_vpx = floor(vec2(g_uv.x * g_size.x, (1.0 - g_uv.y) * g_size.y));
 ${fetch}
 ${calls}
 ${store}
@@ -483,10 +490,12 @@ const flat = (rows: number[][]) => rows.flat();
 const rowMajorToColumnMajor = (m: number[]) => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
 
 /** Translate derived values into shader uniforms. Stage on/off flags included. */
-export function derivedToUniforms(d: Derived, overlayFlatMask = -1): Record<string, Uniform> {
+export function derivedToUniforms(d: Derived, overlayFlatMask = -1, view: readonly number[] = [0, 0, 1, 1]): Record<string, Uniform> {
   const mt = d.masks;
   const u: Record<string, Uniform> = {
     u_size: { k: 'v2', v: [d.w, d.h] },
+    u_view: { k: 'v4', v: [...view] },
+    u_bsize: { k: 'v2', v: [d.blurSize.w, d.blurSize.h] },
     u_remap: { k: 'i', v: d.remap ? 1 : 0 },
     u_geoOn: { k: 'i', v: d.geo.active ? 1 : 0 },
     u_geoInv: { k: 'm3', v: rowMajorToColumnMajor(d.geo.inv) },

@@ -89,6 +89,17 @@ try {
     if (bad) failed = true;
     console.log(`${bad ? 'FAIL' : 'ok  '} max=${r.maxDiff} mean=${r.meanDiff.toFixed(3)} effect=${r.effect.toFixed(2)} over2=${r.pixelsOver2}  ${JSON.stringify(r.params).slice(0, 100)}`);
   }
+
+  // The half-size variant is only a sanity bound: this 96x72 test image is so small that the minimum blur radii (px floors) dominate
+  // when halved; real photos (fw >= ~1000 px) are not affected. The exact variant above is the strict check.
+  // ---- view windows (zoom/pan): the middle half drawn through a ViewWindow == the same pixels of the full render
+  const exact = await page.evaluate((c) => window.runViewParity(c, 1), cases);
+  const approx = await page.evaluate((c) => window.runViewParity(c, 0.5), cases);
+  let vBad = 0, vMax = 0, aMax = 0, aMeanMax = 0;
+  for (const r of exact) { vMax = Math.max(vMax, r.maxDiff); if (r.maxDiff > TOLERANCE) { vBad++; console.log(`FAIL view max=${r.maxDiff} ${JSON.stringify(r.params).slice(0, 100)}`); } }
+  for (const r of approx) { aMax = Math.max(aMax, r.maxDiff); aMeanMax = Math.max(aMeanMax, r.meanDiff); if (r.meanDiff > 8) { vBad++; console.log(`FAIL view(approx blur) mean=${r.meanDiff.toFixed(2)} ${JSON.stringify(r.params).slice(0, 100)}`); } }
+  console.log(`${vBad ? 'FAIL' : 'ok  '} view windows: ${exact.length} cases, exact-blur max diff ${vMax}; half-size blur source: max ${aMax}, worst mean ${aMeanMax.toFixed(2)}`);
+  if (vBad || exact.length < 40) failed = true;
 } catch (e) {
   console.error(e);
   failed = true;

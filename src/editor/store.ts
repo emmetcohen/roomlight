@@ -15,7 +15,7 @@ import { canRedo, canUndo, createHistory, jumpTo, present, redo, undo } from '..
 import { applyEdit, commitCurve, commitLabel, commitParam, previewCurve, previewEdit, previewParam, previewPatch, resetAll, resetCurve, resetKeys, resetParam, resetSection, setParams, type EditCtx, type EditHistory, type ParamPatch } from '../history/editActions';
 import { cropIsValid, flip as flipCrop, resetCropTool, rotate90 as rotateCrop, setAspect, swapAspectOrientation } from '../geometry/cropActions';
 import type { AspectPreset, Crop } from '../geometry/crop';
-import { geoOf, makeGeoMap, outputToSource } from '../geometry/transform';
+import { geoOf, makeGeoMap, outputSize, outputToSource } from '../geometry/transform';
 import { edgeSamples, estimateUpright, grayFromRgba, type UprightMode } from '../geometry/upright';
 import { getLensProfile } from '../lens/profiles';
 
@@ -38,6 +38,8 @@ import { BUILTIN_PRESETS, type Preset } from '../presets/builtin';
 import { DEFAULT_GROUPS, type GroupId } from '../presets/groups';
 import { applyPreset, extractPreset, sanitizePreset, type PresetData } from '../presets/snapshot';
 import { autoTone } from '../image-engine/autoTone';
+import { runExport, saveBlob, zipStore } from '../export/client';
+import { DEFAULT_EXPORT, formatFilename, normalizeExport, resolveSize, uniqueNames, type ExportSettings } from '../export/types';
 
 /** Long edge of the working preview. Full-resolution rendering is an export-phase concern. */
 export const PREVIEW_MAX_DIM = 2560;
@@ -54,6 +56,9 @@ export interface PhotoSummary {
   /** Has non-default edits. */
   edited: boolean;
 }
+
+export interface ExportStatus { done: number; total: number; stage: string; name: string }
+export interface ExportSummary { files: number; bytes: number; notes: string[]; ranIn: 'worker' | 'main' | 'mixed'; zip: boolean; cancelled: boolean; names: string[]; size: string }
 
 export interface SettingsClipboard { groups: GroupId[]; data: PresetData; from: string }
 
@@ -107,6 +112,10 @@ export interface EditorState {
   selection: string[];
   clipboard: SettingsClipboard | null;
   dialog: DialogId | null;
+  exportSettings: ExportSettings;
+  exportScope: 'open' | 'selected' | 'shown';
+  exportStatus: ExportStatus | null;
+  exportSummary: ExportSummary | null;
   currentId: string | null;
   image: LoadedImage | null;
   loading: boolean;
@@ -140,6 +149,10 @@ const initial: EditorState = {
   selection: [],
   clipboard: null,
   dialog: null,
+  exportSettings: DEFAULT_EXPORT,
+  exportScope: 'open',
+  exportStatus: null,
+  exportSummary: null,
   currentId: null,
   image: null,
   loading: false,
@@ -210,7 +223,7 @@ export class EditorStore {
       this.records.set(r.id, r);
       photos.push(this.summarize(r, infoBy.get(r.id) ?? defaultInfo(r.id), editedBy.get(r.id) ?? false));
     }
-    this.setPhotos(photos, { albums, userPresets });
+    this.setPhotos(photos, { albums, userPresets, exportSettings: normalizeExport(await this.db.getMeta('exportSettings')) });
     this.set({ ready: true });
     void this.backfillInfo();
     const last = await this.db.getMeta<string>('lastPhotoId');
@@ -364,7 +377,7 @@ export class EditorStore {
   jumpTo = (i: number) => { const h = this.h(); if (h) this.setHistory(jumpTo(h, i)); };
 
   // ---------------------------------------------------------------- tools
-  openDialog = (dialog: DialogId) => { if (this.state.currentId) this.set({ dialog }); };
+  openDialog = (dialog: DialogId) => { if (this.state.currentId) this.set({ dialog, ...(dialog === 'export' ? { exportSummary: null, exportScope: this.state.selection.length > 1 ? 'selected' as const : 'open' as const } : {}) }); };
   closeDialog = () => this.set({ dialog: null });
   setTool = (tool: Tool) => this.set({ tool, eyedropper: false, pickingColor: false });
 
@@ -736,6 +749,57 @@ export class EditorStore {
     const h = this.h(), img = this.state.image;
     if (!h || !img) return;
     this.setHistory(setParams(h, autoTone(img.analysis), 'Auto Tone'));
+  };
+
+
+  // ---------------------------------------------------------------- export
+  private exportCancelled = false;
+  setExportSettings = (fn: (s: ExportSettings) => ExportSettings) => {
+    const next = normalizeExport(fn(this.state.exportSettings));
+    this.set({ exportSettings: next });
+    void this.db.setMeta('exportSettings', next);
+  };
+  setExportScope = (exportScope: 'open' | 'selected' | 'shown') => this.set({ exportScope, exportSummary: null });
+  cancelExport = () => { this.exportCancelled = true; };
+  clearExportSummary = () => this.set({ exportSummary: null });
+
+  /** Export photos at full resolution with the current export settings. Photos are rendered one at a time, off the main thread when possible. */
+  exportPhotos = async (ids: string[]) => {
+    const settings = this.state.exportSettings;
+    if (!ids.length || this.state.exportStatus) return;
+    this.exportCancelled = false;
+    this.set({ exportSummary: null, exportStatus: { done: 0, total: ids.length, stage: 'Starting', name: '' } });
+    const out: { base: string; ext: string; bytes: Uint8Array; mime: string; date: Date }[] = [];
+    const notes = new Set<string>(), where = new Set<'worker' | 'main'>();
+    let size = '';
+    try {
+      for (let i = 0; i < ids.length; i++) {
+        if (this.exportCancelled) break;
+        const rec = this.records.get(ids[i]), sum = this.state.photos.find((p) => p.id === ids[i]);
+        if (!rec || !sum) continue;
+        const params = present(await this.historyFor(ids[i]));
+        this.set({ exportStatus: { done: i, total: ids.length, stage: 'Starting', name: rec.name } });
+        const native = resolveSize(outputSize(params, rec.width, rec.height), settings.resize);
+        const res = await runExport({ original: rec.original, name: rec.name, type: rec.type, params, settings }, (stage) => this.set({ exportStatus: { done: i, total: ids.length, stage, name: rec.name } }));
+        where.add(res.ranIn);
+        res.notes.forEach((n) => notes.add(n));
+        size = `${res.width} × ${res.height}`;
+        const date = new Date(sum.info.exif?.capturedAt ?? sum.addedAt);
+        out.push({ base: formatFilename(settings.filename, { name: rec.name, index: i + 1, total: ids.length, date, rating: sum.info.rating, title: sum.info.title, width: native.w, height: native.h }), ext: res.ext, bytes: res.bytes, mime: res.mime, date });
+      }
+      const names = uniqueNames(out.map((o) => o.base)).map((n, i) => `${n}.${out[i].ext}`);
+      if (out.length > 1 && settings.zip) {
+        const zip = zipStore(out.map((o, i) => ({ name: names[i], data: o.bytes, date: o.date })));
+        saveBlob(new Blob([zip as BlobPart], { type: 'application/zip' }), `roomlight-export-${new Date().toISOString().slice(0, 10)}.zip`);
+      } else {
+        for (let i = 0; i < out.length; i++) { saveBlob(new Blob([out[i].bytes as BlobPart], { type: out[i].mime }), names[i]); if (out.length > 1) await new Promise((r) => setTimeout(r, 250)); }
+      }
+      this.set({ exportSummary: { files: out.length, bytes: out.reduce((s, o) => s + o.bytes.length, 0), notes: [...notes], ranIn: where.size > 1 ? 'mixed' : (where.values().next().value ?? 'main'), zip: out.length > 1 && settings.zip, cancelled: this.exportCancelled, names, size } });
+    } catch (e) {
+      this.toast(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.set({ exportStatus: null });
+    }
   };
 
   toggleOriginal = (v?: boolean) => this.set({ showOriginal: v ?? !this.state.showOriginal });
