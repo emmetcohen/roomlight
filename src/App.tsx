@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BasicPanel } from './editor/BasicPanel';
+import { EditPanels } from './editor/EditPanels';
 import { Filmstrip } from './editor/Filmstrip';
 import { Histogram } from './editor/Histogram';
 import { HistoryPanel } from './editor/HistoryPanel';
@@ -77,7 +77,7 @@ export default function App() {
       <aside className="right">
         <Histogram />
         <div className="right-scroll">
-          {current ? <BasicPanel /> : <div className="muted small pad">Import or select a photo to start editing.</div>}
+          {current ? <EditPanels /> : <div className="muted small pad">Import or select a photo to start editing.</div>}
         </div>
       </aside>
 

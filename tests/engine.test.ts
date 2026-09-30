@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { linearToSrgb, luminance, srgbToLinear, type Vec3 } from '../src/color/colorSpace';
 import { applyColor, contrastCurve, contrastShape, solveWhiteBalance, toneCurve, toneWeight, wbMultipliers } from '../src/image-engine/model';
 import { DEFAULT_PARAMS, SLIDERS, normalizeParams, type EditParams } from '../src/image-engine/params';
-import { DEFAULT_PIPELINE, processLinear, renderImageData, renderPixel8 } from '../src/image-engine/pipeline';
+import { DEFAULT_PIPELINE, processLinear, renderImageData as renderRaw, renderPixel8 } from '../src/image-engine/pipeline';
+import { scene, SCENE_H, SCENE_W } from './helpers';
 import { computeHistogram } from '../src/image-engine/histogram';
-import { buildFragmentShader, paramsToUniforms } from '../src/image-engine/glsl';
+import { buildFragmentShader, derivedToUniforms } from '../src/image-engine/glsl';
+import { derive } from '../src/image-engine/derive';
 
 const P = (over: Partial<EditParams>): EditParams => ({ ...DEFAULT_PARAMS, ...over });
+/** Render a 1-row strip (width = pixel count). */
+const renderImageData = (src: Uint8ClampedArray | Uint8Array, p: EditParams) => renderRaw(src, src.length / 4, 1, p);
 const close = (a: number, b: number, eps = 1e-6) => expect(Math.abs(a - b)).toBeLessThanOrEqual(eps);
 
 /** 256 x 1 ramp per channel plus colourful patches, as RGBA8. */
@@ -39,20 +43,34 @@ describe('identity and non-destruction', () => {
   });
 
   it('every slider is a real parameter that changes the rendered output', () => {
-    // Regional sliders only act on their tonal region, so probe dark, mid and bright pixels.
-    const probes: [number, number, number][] = [[150, 110, 90], [12, 10, 9], [240, 236, 230]];
+    const src = scene();
+    const base = renderRaw(src, SCENE_W, SCENE_H, DEFAULT_PARAMS);
     for (const s of SLIDERS) {
-      for (const v of [s.min, s.max]) {
-        const changed = probes.some((px) => renderPixel8(px, P({ [s.key]: v })).some((c, i) => c !== renderPixel8(px, DEFAULT_PARAMS)[i]));
+      if (s.key === 'grainSize') continue; // grain cells scale with image size; covered on a wide strip in phase2.test.ts
+      // Hue controls only act when their saturation is non-zero.
+      const tinted = { grade_shadows_sat: 60, grade_shadows_hue: 240, grade_mid_sat: 40, grade_mid_hue: 100, grade_highlights_sat: 60, grade_highlights_hue: 40 };
+      const prep: Partial<EditParams> =
+        s.key.startsWith('grade_') && s.key.endsWith('_hue') ? { [s.key.replace('_hue', '_sat')]: 60 }
+        : s.key === 'gradeBlending' || s.key === 'gradeBalance' ? tinted // only matter once something is tinted
+        : s.section === 'vignette' && s.key !== 'vignetteAmount' ? { vignetteAmount: -60 } // modifiers need an active vignette
+        : s.section === 'grain' && s.key !== 'grainAmount' ? { grainAmount: 50 }
+        : {};
+      const ref = renderRaw(src, SCENE_W, SCENE_H, P(prep));
+      const isHue = s.key.startsWith('grade_') && s.key.endsWith('_hue'); // 360° wraps to 0°, so test interior angles
+      for (const v of isHue ? [90, 200] : [s.min, s.max]) {
+        if (v === s.default) continue;
+        const out = renderRaw(src, SCENE_W, SCENE_H, P({ ...prep, [s.key]: v }));
+        const changed = out.some((x, i) => x !== ref[i]);
         expect(changed, `${s.key}=${v} should change the image`).toBe(true);
       }
     }
+    expect(base.length).toBe(src.length);
   });
 
   it('every slider reaches the shader as a uniform and declares a sane range/default', () => {
-    const u = paramsToUniforms(DEFAULT_PARAMS);
+    const u = derivedToUniforms(derive(DEFAULT_PARAMS, 10, 10));
     const frag = buildFragmentShader(DEFAULT_PIPELINE);
-    for (const name of Object.keys(u)) expect(frag).toContain(`uniform`), expect(frag).toContain(name);
+    for (const name of Object.keys(u)) expect(frag, name).toContain(name);
     for (const s of SLIDERS) {
       expect(s.min).toBeLessThan(s.max);
       expect(s.default).toBeGreaterThanOrEqual(s.min);
@@ -64,6 +82,7 @@ describe('identity and non-destruction', () => {
     const p = normalizeParams({ exposure: 99, contrast: 'x', bogus: 1, tint: -500 });
     expect(p.exposure).toBe(5);
     expect(p.contrast).toBe(0);
+    expect(p.curves.rgb).toHaveLength(2);
     expect(p.tint).toBe(-100);
     expect('bogus' in p).toBe(false);
   });

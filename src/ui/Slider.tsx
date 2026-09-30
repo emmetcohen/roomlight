@@ -49,14 +49,14 @@ export function Slider({ param }: { param: ParamKey }) {
       </label>
       <input
         className="slider-number"
-        aria-label={`${def.label} value`}
+        aria-label={`${def.fullLabel} value`}
         value={draft ?? formatParam(param, value)}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commitDraft}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setDraft(null); e.stopPropagation(); }}
         onFocus={(e) => e.target.select()}
       />
-      <button className="slider-reset" disabled={!edited} onClick={() => store.resetParam(param)} aria-label={`Reset ${def.label}`} title="Reset">↺</button>
+      <button className="slider-reset" disabled={!edited} onClick={() => store.resetParam(param)} aria-label={`Reset ${def.fullLabel}`} title="Reset">↺</button>
       <input
         className="slider-range"
         type="range"
@@ -64,7 +64,7 @@ export function Slider({ param }: { param: ParamKey }) {
         max={def.max}
         step={def.step}
         value={value}
-        aria-label={def.label}
+        aria-label={def.fullLabel}
         onChange={(e) => store.previewParam(param, parseFloat(e.target.value))}
         onPointerUp={() => store.commitParam(param)}
         onPointerCancel={() => store.commitParam(param)}

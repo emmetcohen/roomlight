@@ -22,6 +22,7 @@ export function Viewer() {
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const frame = useRef(0);
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export function Viewer() {
     try {
       rendererRef.current ??= new WebGLRenderer(canvasRef.current!);
       rendererRef.current.setImage(image.bitmap);
+      if (!rendererRef.current.supportsLocal) setNote('This GPU cannot render to float textures: Texture, Clarity and Dehaze are disabled.');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -90,6 +92,7 @@ export function Viewer() {
       />
       {showOriginal && image && <div className="badge">Original</div>}
       {loading && <div className="badge busy">Loading…</div>}
+      {note && <div className="badge warn">{note}</div>}
     </div>
   );
 }

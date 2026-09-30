@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Roomlight — a non-destructive, GPU-accelerated photo editor for the browser.",
+  "description": "Roomlight \u2014 a non-destructive, GPU-accelerated photo editor for the browser.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify:gpu": "node scripts/verify-gpu.mjs",
-    "verify:e2e": "node scripts/e2e.mjs"
+    "verify:e2e": "node scripts/e2e.mjs",
+    "build:single": "npm run build && node scripts/build-single.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

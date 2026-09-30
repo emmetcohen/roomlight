@@ -113,6 +113,76 @@ try {
 
   await page.screenshot({ path: 'scripts/.out/editor.png' });
 
+  // ---------------------------------------------------------------- Phase 2 panels
+  const open = async (title) => { await page.locator('.panel-toggle', { hasText: title }).click(); await page.waitForTimeout(100); };
+  const topLabel = () => page.locator('.history-list li button').first().innerText();
+  const settle = () => page.waitForTimeout(250);
+
+  // Tone curve: add a point by clicking the curve, drag it up; double-click removes it.
+  await open('Tone Curve');
+  await page.locator('.curve-svg').scrollIntoViewIfNeeded();
+  const svg = await page.locator('.curve-svg').boundingBox();
+  const cx = (x) => svg.x + ((10 + x * 256) / 276) * svg.width, cy = (y) => svg.y + ((10 + (1 - y) * 256) / 276) * svg.height;
+  const preCurve = await shot();
+  await page.mouse.move(cx(0.5), cy(0.5)); await page.mouse.down();
+  await page.mouse.move(cx(0.5), cy(0.6), { steps: 4 }); await page.mouse.move(cx(0.5), cy(0.72), { steps: 4 }); await page.mouse.up(); await settle();
+  check('curve: click+drag adds a point and brightens the image', (await shot()) > preCurve * 1.02, `${preCurve} -> ${await shot()}`);
+  check('curve: drag recorded as one "Adjust RGB Curve" history entry', (await topLabel()) === 'Adjust RGB Curve');
+  check('curve: readout shows the selected point', /Point · In 128 → Out 1[6-9]\d/.test(await page.locator('.curve-readout').innerText()), await page.locator('.curve-readout').innerText());
+  await page.screenshot({ path: 'scripts/.out/curve.png' });
+  await page.mouse.dblclick(cx(0.5), cy(0.72)); await settle();
+  check('curve: double-click removes the point (back to the pre-curve render)', (await shot()) === preCurve);
+  // Per-channel curve: pull the red white-point down -> image loses red
+  await page.getByRole('tab', { name: /Red/ }).click();
+  await page.mouse.move(cx(1), cy(1)); await page.mouse.down(); await page.mouse.move(cx(1), cy(0.6), { steps: 5 }); await page.mouse.up(); await settle();
+  check('curve: Red channel white point is draggable (black/white points)', (await shot()) < preCurve && /White point/.test(await page.locator('.curve-readout').innerText()));
+  await page.locator('.curve-tabs .tool').click(); await settle(); // Reset this channel
+  check('curve: Reset restores the channel', (await shot()) === preCurve);
+
+  // Colour mixer
+  await open('Color Mixer');
+  const preMix = await shot();
+  await page.getByRole('tab', { name: 'Saturation' }).click();
+  await setSlider('mix_red_sat', -100); await setSlider('mix_blue_sat', -100); await setSlider('mix_green_sat', -100);
+  check('mixer: band sliders change the image', (await shot()) !== preMix);
+  check('mixer: history label names the band', (await topLabel()).startsWith('Adjust ') && /Saturation$/.test(await topLabel()), await topLabel());
+  await page.screenshot({ path: 'scripts/.out/mixer.png' });
+  await page.locator('.tool', { hasText: 'Reset Saturation' }).click(); await settle();
+  check('mixer: per-attribute reset restores the render', (await shot()) === preMix);
+
+  // Colour grading: drag the wheel
+  await open('Color Grading');
+  const preGrade = await shot();
+  await page.getByRole('tab', { name: 'Global' }).click();
+  await page.locator('canvas.wheel').scrollIntoViewIfNeeded();
+  const wheel = await page.locator('canvas.wheel').boundingBox();
+  await page.mouse.move(wheel.x + wheel.width / 2, wheel.y + wheel.height / 2);
+  await page.mouse.down(); await page.mouse.move(wheel.x + wheel.width * 0.8, wheel.y + wheel.height * 0.35, { steps: 6 }); await page.mouse.up(); await settle();
+  const gSat = parseInt(await page.locator('.slider[data-param=grade_global_sat] .slider-number').inputValue());
+  const gHue = parseInt(await page.locator('.slider[data-param=grade_global_hue] .slider-number').inputValue());
+  check('grading: wheel drag sets hue (angle) and saturation (distance)', gSat > 30 && gHue > 20 && gHue < 70, `hue=${gHue} sat=${gSat}`);
+  check('grading: tint changes the image; drag = one history entry', (await shot()) !== preGrade && (await topLabel()) === 'Global Color');
+  await page.screenshot({ path: 'scripts/.out/grading.png' });
+  await page.locator('canvas.wheel').dblclick(); await settle();
+  check('grading: double-click resets the wheel', (await shot()) === preGrade);
+
+  // Presence + effects
+  const prePresence = await shot();
+  await setSlider('texture', 60); await setSlider('clarity', 50); await setSlider('dehaze', 30);
+  check('presence: texture/clarity/dehaze (multi-pass path) change the image', (await shot()) !== prePresence);
+  await page.screenshot({ path: 'scripts/.out/presence.png' });
+  await open('Vignette');
+  const preVig = await shot();
+  await setSlider('vignetteAmount', -70);
+  check('vignette: darkens the frame', (await shot()) < preVig * 0.98, `${preVig} -> ${await shot()}`);
+  await open('Grain');
+  const preGrain = await shot();
+  await setSlider('grainAmount', 60);
+  const g1 = await shot();
+  check('grain: changes the image', g1 !== preGrain);
+  check('grain is stable between renders (deterministic)', (await shot()) === g1);
+  await page.screenshot({ path: 'scripts/.out/effects.png' });
+
   // Undo / redo via keyboard
   await page.locator('body').click({ position: { x: 5, y: 5 } });
   const hist = () => page.locator('.history-list li button.current').innerText();

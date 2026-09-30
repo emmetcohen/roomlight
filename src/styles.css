@@ -89,3 +89,21 @@ kbd { font: 10px ui-monospace, monospace; background: var(--bg-3); border: 1px s
 
 .toasts { position: fixed; bottom: 104px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: #3a1d1d; border: 1px solid #7a3030; color: #ffd0d0; padding: 8px 14px; border-radius: 6px; max-width: 560px; cursor: pointer; }
+
+/* ---- Phase 2 panels */
+.app { grid-template-columns: 210px 1fr 340px; }
+.seg.wide { display: flex; margin-bottom: 8px; } .seg.wide button { flex: 1; padding: 3px 4px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.seg button.on { background: #2f2a1e; }
+.pip { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); display: inline-block; }
+.subhead { margin: 10px 0 0; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); font-weight: 600; }
+.curve-editor { user-select: none; }
+.curve-tabs { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; }
+.curve-tabs .seg button { font-size: 11px; padding: 2px 7px; display: inline-flex; align-items: center; gap: 4px; }
+.curve-svg { width: 100%; display: block; touch-action: none; cursor: crosshair; outline: none; border-radius: 3px; }
+.curve-svg:focus-visible { box-shadow: 0 0 0 2px var(--accent-dim); }
+.curve-readout { margin-top: 6px; font-size: 11px; min-height: 28px; color: var(--text); }
+.mixer-row { display: flex; align-items: center; gap: 7px; } .mixer-row .slider { flex: 1; }
+.swatch { width: 8px; height: 8px; border-radius: 2px; margin-top: 4px; flex: none; }
+.wheel-wrap { display: flex; justify-content: center; margin: 4px 0 8px; }
+.wheel { touch-action: none; cursor: crosshair; border-radius: 50%; }
+.badge.warn { top: auto; bottom: 12px; color: #ffb4b4; border-color: #7a3030; }

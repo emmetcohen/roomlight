@@ -9,9 +9,10 @@
 import { useSyncExternalStore } from 'react';
 import { autoWhiteBalance, makeAnalysisImage, sampleLinear, type AnalysisImage } from '../image-engine/analysis';
 import { solveWhiteBalance } from '../image-engine/model';
-import { DEFAULT_PARAMS, normalizeParams, paramsEqual, type EditParams, type ParamKey, type SectionId } from '../image-engine/params';
+import type { CurveChannel, CurvePoint } from '../image-engine/curves';
+import { DEFAULT_PARAMS, isDefault, normalizeParams, type EditParams, type ParamKey, type SectionId } from '../image-engine/params';
 import { canRedo, canUndo, createHistory, jumpTo, present, redo, undo } from '../history/history';
-import { commitParam, previewParam, resetAll, resetParam, resetSection, setParams, type EditHistory } from '../history/editActions';
+import { commitCurve, commitLabel, commitParam, previewCurve, previewParam, previewPatch, resetAll, resetCurve, resetKeys, resetParam, resetSection, setParams, type EditHistory, type ParamPatch } from '../history/editActions';
 import { decodeFile } from '../import/decoders';
 import { makeThumbnail } from '../library/thumbnail';
 import { EDIT_SCHEMA_VERSION, IndexedDbPhotoStore, type PhotoRecord, type PhotoStore } from '../storage/db';
@@ -217,6 +218,13 @@ export class EditorStore {
   previewParam = (key: ParamKey, value: number) => { const h = this.h(); if (h) this.setHistory(previewParam(h, key, value), false); };
   commitParam = (key: ParamKey, coalesce = false) => { const h = this.h(); if (h) this.setHistory(commitParam(h, key, coalesce)); };
   setParam = (key: ParamKey, value: number, coalesce = false) => { this.previewParam(key, value); this.commitParam(key, coalesce); };
+  /** Multi-parameter gesture (e.g. a colour wheel sets hue + saturation together). */
+  previewPatch = (patch: ParamPatch) => { const h = this.h(); if (h) this.setHistory(previewPatch(h, patch), false); };
+  commitPatch = (label: string) => { const h = this.h(); if (h) this.setHistory(commitLabel(h, label)); };
+  resetKeys = (keys: ParamKey[], label: string) => { const h = this.h(); if (h) this.setHistory(resetKeys(h, keys, label)); };
+  previewCurve = (ch: CurveChannel, pts: CurvePoint[]) => { const h = this.h(); if (h) this.setHistory(previewCurve(h, ch, pts), false); };
+  commitCurve = (ch: CurveChannel) => { const h = this.h(); if (h) this.setHistory(commitCurve(h, ch)); };
+  resetCurve = (ch: CurveChannel | 'all') => { const h = this.h(); if (h) this.setHistory(resetCurve(h, ch)); };
   resetParam = (key: ParamKey) => { const h = this.h(); if (h) this.setHistory(resetParam(h, key)); };
   resetSection = (s: SectionId) => { const h = this.h(); if (h) this.setHistory(resetSection(h, s)); };
   resetAll = () => { const h = this.h(); if (h) this.setHistory(resetAll(h)); };
@@ -245,7 +253,7 @@ export class EditorStore {
     this.set({ eyedropper: false });
   };
 
-  isEdited = () => !paramsEqual(this.state.params, DEFAULT_PARAMS);
+  isEdited = () => !isDefault(this.state.params);
 }
 
 export const store = new EditorStore(new IndexedDbPhotoStore());

@@ -17,7 +17,7 @@ ORIGINAL (Blob, never modified)  +  EditParams (≈10 numbers)  ──render─�
 ## Pipeline
 
 `src/image-engine/pipeline.ts` defines the pipeline as an **ordered list of stages**
-(`['whiteBalance','exposure','tone','color']`). Each stage has
+(`whiteBalance, exposure, tone, local, curve, mixer, grading, color, vignette, grain`). Each stage has
 
 * a CPU implementation (`model.ts`) — the reference/spec, used by tests and as a fallback, and
 * a GLSL function (`glsl.ts`) — used for real-time rendering.
@@ -26,6 +26,14 @@ ORIGINAL (Blob, never modified)  +  EditParams (≈10 numbers)  ──render─�
 inserting stages (curves, colour mixer, masks, detail…) means editing data, not the renderer.
 `npm run verify:gpu` renders a test image through the real WebGL2 shader in headless Chromium and
 checks it against the CPU reference (currently ≤ 1 8-bit level difference on all cases).
+
+**Multi-pass:** all stages are per-pixel except `local` (texture / clarity / dehaze), which needs blurred
+neighbourhoods. When `local` is active the renderer runs: pass 1 (stages before `local`) → RGBA16F target →
+three blur fields (box-downsample → Gaussian H → Gaussian V, at a power-of-two reduced resolution so the
+widest blur stays ≤ ~40 taps) → pass 2 (`local` + later stages). When it is inactive the whole pipeline is one
+pass. All other stages are compiled once and switched on/off by uniform flags, so moving a slider never
+recompiles a shader. `derive.ts` computes every derived value (gains, LUT, blur plan, flags) once; the CPU
+reference and GPU uniforms both read it, so they cannot disagree about what a slider means.
 
 **Data flow:** 8-bit sRGB decode → GPU `SRGB8_ALPHA8` texture (hardware converts to *linear* on
 sampling; mip-mapped downscaling is therefore done in linear light) → one float shader pass
@@ -101,6 +109,68 @@ with a per-pixel blend weight. *"Linear"* refers to the operation in linear ligh
 Computed from the **rendered output** (same shader program, drawn into a ≤256px framebuffer and read
 back with `readPixels`), not from the source. Shows R/G/B/Luma bins (256) and the share of pixels with
 any channel at 255 (red) / 0 (blue). The "clipping" toggle on the image uses the same rule in the shader.
+
+## Adjustments (Phase 2)
+
+### Tone curve (`curves`: four point lists `rgb`, `r`, `g`, `b`)
+* **Input/Output:** linear RGB → **encoded** sRGB [0,1] → curve → decode. Curves are display-referred (like the
+  histogram they are drawn over); values are clamped to [0,1] before the curve. **Nonlinear.** No masks.
+* **Interpolation:** monotone cubic Hermite (PCHIP / Fritsch–Carlson): C¹-smooth, passes through every point,
+  and cannot overshoot between monotone points. Outside the first/last point the curve is flat, so moving the
+  first point right is an input **black point** and moving the last point left is an input **white point**;
+  moving them up/down lifts blacks / lowers whites.
+* **Channels:** `out_c = curve_c(curve_rgb(x))`, composed on the CPU into one 1024×RGB lookup table (RGBA16F
+  texture, linear filtered). Cost on the GPU: three texture reads per pixel. A default curve skips the stage.
+* **Editing:** `addPoint / movePoint / removePoint` (pure, tested) keep points sorted with a minimum gap; the
+  end points cannot be removed.
+
+### Colour mixer (`mix_<color>_<hue|sat|lum>`, 24 sliders, −100…100)
+* **Space:** OKLab/OKLCH (perceptually uniform hue/chroma). **Nonlinear.** Hue centres are the OKLCH hues of pure
+  red/orange/yellow/green/aqua/blue/purple/magenta (29°, 53°, 110°, 143°, 195°, 264°, 294°, 328°).
+* **Smooth bands:** for a pixel of hue h only the two neighbouring bands are non-zero, cross-faded with a
+  smoothstep, so weights sum to 1 (partition of unity) and there is no boundary. A pixel between red and orange
+  is moved partly by both sliders.
+* **Model:** `h' = h + 30°·Σw·hue`, `C' = C·(1 + Σw·sat)`, `L' = L + 0.25·Σw·lum`, all scaled by a chroma gate
+  `smoothstep(0, 0.03, C)` so neutral pixels (undefined hue) are untouched. Out-of-gamut results clamp at 0.
+
+### Colour grading (`grade_<shadows|mid|highlights|global>_<hue|sat|lum>`, `gradeBlending`, `gradeBalance`)
+* **Space:** OKLab. A tint is a vector added to (a, b): `chroma = sat/100·0.08` at hue angle `h`; luminance adds
+  `lum/100·0.2` to L. The wheel UI draws the same OKLCH colours, so the marker sits on the colour that is added.
+* **Range weights** on encoded luminance v: `shadows = 1 − smoothstep(0.3+s−w, 0.3+s+w, v)`,
+  `highlights = smoothstep(0.7+s−w, 0.7+s+w, v)`, `mid = 1 − shadows − highlights` (≥ 0), global = 1.
+  **Balance** shifts both crossovers (`s = −0.25·balance/100`: + favours highlights); **Blending** sets the
+  transition half-width `w = 0.04 + 0.26·blending/100`.
+
+### Texture, Clarity, Dehaze (`texture`, `clarity`, `dehaze`, −100…100) — neighbourhood stage
+* **Fields** (radii are fractions of the long edge L): `σ_texture = 0.0012·L`, `σ_clarity = 0.010·L`,
+  `σ_dehaze = 0.030·L` (minimum 0.6 / 1.5 / 3 px). Texture and clarity blur the perceptual luminance
+  `v = sRGB_OETF(Y)`; dehaze blurs the dark channel `min(r,g,b)`.
+* **Texture / Clarity:** add scaled detail, `v' = v + 0.9·tex·(v − blur_σt(v)) + 0.8·clar·m(v)·d/(1+3|d|)`,
+  with `d = v − blur_σc(v)` and `m(v) = 4v(1−v)` (mid-tone emphasis). The `d/(1+3|d|)` term soft-limits strong
+  edges to reduce halos. Colour is preserved by luminance-ratio scaling (see Tone stage).
+* **Dehaze +:** simplified dark-channel prior, `J = (I − A)/t + A`, `A = 1`, `t = max(1 − 0.9·dehaze·darkBlur, 0.15)`.
+  **Dehaze −:** blends toward a 0.7 grey haze (up to 60%), which lifts blacks and lowers contrast.
+* **Approximations:** a Gaussian base layer halos at strong edges (no edge-aware/guided filter yet); dehaze uses a
+  blurred dark channel and a fixed airlight instead of a refined transmission map. Both are isolated in
+  `adjustments.ts` / `local` and can be upgraded without touching parameters.
+* **Performance:** blurs run only while one of the three sliders is non-zero, at reduced resolution.
+
+### Vignette (`vignetteAmount/Midpoint/Roundness/Feather/Highlights`)
+* **Space:** linear light, like exposure. **Model:** `gain = 2^(amount·k·2.5)` where
+  `k = smoothstep(midpoint, midpoint + feather', d)` and `d` is the normalised distance from the centre
+  (0 centre, 1 corner). **Roundness** ≥ 0 bends the shape to a true circle in image space; < 0 raises the
+  superellipse exponent (2 → 6) toward a rounded rectangle. **Highlights** (for darkening only) blends the gain
+  back toward 1 on bright pixels: `gain' = gain + (1 − gain)·hl·smoothstep(0.4, 0.9, v)`.
+* Applied to the whole frame for now; once cropping exists it will follow the crop (post-crop vignette).
+
+### Grain (`grainAmount/Size/Roughness`)
+* **Procedural:** a 32-bit integer hash (identical on CPU and GPU), no texture. `soft` = bilinearly interpolated
+  lattice noise with cell size from **Size** (`(0.0007 + 0.004·size/100)·L` px, ≥ 1); `fine` = per-pixel noise;
+  **Roughness** cross-fades soft → fine. Both are scaled to σ ≈ 0.577 (uniform white-noise σ).
+* Added in encoded space as `Δ = noise·0.12·amount/100·(0.25 + 0.75·4v(1−v))` (strongest in mid-tones), the same
+  value on all channels (monochrome grain). Zero-mean, deterministic (no flicker between renders).
+* Because cell size scales with the output size, grain looks alike on preview and export at the same aspect, but
+  is not pixel-identical across resolutions.
 
 ## Import
 `src/import/decoders.ts` is a decoder registry. Only the browser decoder (JPEG/PNG/WebP/…) is

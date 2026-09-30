@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { canRedo, canUndo, createHistory, present, redo, undo, jumpTo, COALESCE_WINDOW_MS } from '../src/history/history';
 import { commitParam, previewParam, resetAll, resetParam, resetSection, setParams } from '../src/history/editActions';
 import { DEFAULT_PARAMS, paramsEqual } from '../src/image-engine/params';
-import { renderImageData } from '../src/image-engine/pipeline';
+import { renderImageData as renderRaw } from '../src/image-engine/pipeline';
+const renderImageData = (src: Uint8ClampedArray, p: Parameters<typeof renderRaw>[3]) => renderRaw(src, src.length / 4, 1, p);
 
 const fresh = () => createHistory({ ...DEFAULT_PARAMS });
 
@@ -110,7 +111,7 @@ describe('history', () => {
   it('snapshots are small parameter objects, not images', () => {
     let h = fresh();
     for (let i = 1; i <= 200; i++) h = setParams(h, { exposure: i / 100 }, 'x');
-    expect(JSON.stringify(h.entries).length).toBeLessThan(200 * 600);
+    expect(JSON.stringify(h.entries).length).toBeLessThan(200 * 2000);
   });
 });
 
@@ -118,3 +119,55 @@ import { commit } from '../src/history/history';
 function commitKey(h: ReturnType<typeof fresh>, now: number) {
   return commit(h, 'Adjust Contrast', paramsEqual, { key: 'param:contrast', now });
 }
+
+import { commitCurve, commitLabel, previewCurve, previewPatch, resetCurve } from '../src/history/editActions';
+import { curvesAreIdentity } from '../src/image-engine/curves';
+
+describe('history: curves and multi-parameter gestures', () => {
+  const bend = [{ x: 0, y: 0 }, { x: 0.5, y: 0.7 }, { x: 1, y: 1 }];
+
+  it('a curve drag is one history entry and undo restores the previous curve', () => {
+    let h = fresh();
+    h = previewCurve(h, 'rgb', [{ x: 0, y: 0 }, { x: 0.5, y: 0.55 }, { x: 1, y: 1 }]);
+    h = previewCurve(h, 'rgb', bend);
+    expect(h.entries.length).toBe(1);
+    h = commitCurve(h, 'rgb');
+    expect(h.entries.length).toBe(2);
+    expect(h.entries[1].label).toBe('Adjust RGB Curve');
+    expect(present(h).curves.rgb).toEqual(bend);
+    h = undo(h);
+    expect(curvesAreIdentity(present(h).curves)).toBe(true);
+    h = redo(h);
+    expect(present(h).curves.rgb).toEqual(bend);
+  });
+
+  it('editing one channel leaves the others untouched; reset restores them', () => {
+    let h = previewCurve(fresh(), 'g', bend);
+    h = commitCurve(h, 'g');
+    expect(present(h).curves.r).toEqual([{ x: 0, y: 0 }, { x: 1, y: 1 }]);
+    h = resetCurve(h, 'g');
+    expect(curvesAreIdentity(present(h).curves)).toBe(true);
+    h = previewCurve(h, 'r', bend); h = commitCurve(h, 'r');
+    h = resetSection(h, 'curve');
+    expect(curvesAreIdentity(present(h).curves)).toBe(true);
+  });
+
+  it('a colour-wheel drag sets hue and saturation together as one entry', () => {
+    let h = fresh();
+    h = previewPatch(h, { grade_shadows_hue: 200, grade_shadows_sat: 20 });
+    h = previewPatch(h, { grade_shadows_hue: 210, grade_shadows_sat: 55 });
+    h = commitLabel(h, 'Shadows Color');
+    expect(h.entries.length).toBe(2);
+    expect(present(h).grade_shadows_hue).toBe(210);
+    expect(present(h).grade_shadows_sat).toBe(55);
+    h = undo(h);
+    expect(present(h).grade_shadows_sat).toBe(0);
+  });
+
+  it('section resets cover every slider in the section', () => {
+    let h = setParams(fresh(), { mix_red_hue: 30, mix_blue_sat: -40, mix_green_lum: 10, exposure: 1 }, 'edit');
+    h = resetSection(h, 'mixer');
+    expect(present(h).mix_red_hue).toBe(0); expect(present(h).mix_blue_sat).toBe(0); expect(present(h).mix_green_lum).toBe(0);
+    expect(present(h).exposure).toBe(1);
+  });
+});
